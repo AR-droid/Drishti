@@ -9,6 +9,9 @@ description = "Local, synthetic-data backend foundation for Drishti"
 requires-python = ">=3.11"
 dependencies = ["fastapi>=0.115,<1.0", "mangum>=0.17,<1.0"]
 
+[project.scripts]
+drishti = "drishti.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27"]
 
@@ -18,4 +21,4 @@ pythonpath = ["."]
 addopts = "-ra"
 
 [tool.setuptools]
-packages = ["app", "app.agent", "app.api", "app.models", "app.security", "app.storage", "app.tools"]
+packages = ["drishti", "app", "app.agent", "app.api", "app.models", "app.security", "app.storage", "app.tools"]

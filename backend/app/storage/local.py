@@ -68,5 +68,9 @@ class LocalAuditStore:
             decision=SecurityDecision(str(decision)) if decision is not None else None,
             decision_reasons=tuple(DecisionReason(str(reason)) for reason in item["decision_reasons"]),
             execution_status=ToolStatus(str(item["execution_status"])),
-            executed=bool(item["executed"]), timestamp=datetime.fromisoformat(str(item["timestamp"])),
+            executed=bool(item["executed"]), risk_score=int(item.get("risk_score", 0)),
+            risk_level=str(item.get("risk_level", "LOW")),
+            risk_flags=tuple(DecisionReason(str(reason)) for reason in item.get("risk_flags", [])),
+            policy_rule=item.get("policy_rule") if isinstance(item.get("policy_rule"), str) else None,
+            timestamp=datetime.fromisoformat(str(item["timestamp"])),
         )

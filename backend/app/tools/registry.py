@@ -17,6 +17,8 @@ def build_demo_components(audit_path: Path, audit_store: AuditStore | None = Non
                 "demo-user": frozenset(_ADAPTERS),
                 "readonly-demo": frozenset({"customer.lookup", "search_documents", "read_document"}),
             },
+            registered_agents=frozenset({"invoicebot", "demo-user", "readonly-demo"}),
+            name="InvoiceBot Least Privilege",
         ),
         _ADAPTERS,
         audit_store,

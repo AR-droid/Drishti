@@ -50,6 +50,8 @@ Resources:
           SECURITY_EVENTS_TABLE: !Ref SecurityEventsTable
           ATTACK_TRACES_TABLE: !Ref AttackTracesTable
           ACTIONS_TABLE: !Ref ActionsTable
+          AGENTS_TABLE: !Ref AgentsTable
+          INCIDENTS_TABLE: !Ref IncidentsTable
           ARTIFACTS_BUCKET: !Ref ArtifactsBucket
       Events:
         ApiProxy:
@@ -66,6 +68,8 @@ Resources:
                 - !GetAtt SecurityEventsTable.Arn
                 - !GetAtt AttackTracesTable.Arn
                 - !GetAtt ActionsTable.Arn
+                - !GetAtt AgentsTable.Arn
+                - !GetAtt IncidentsTable.Arn
             - Effect: Allow
               Action: [dynamodb:Query]
               Resource: !GetAtt AttackTracesTable.Arn
@@ -125,6 +129,26 @@ Resources:
       KeySchema:
         - {AttributeName: request_id, KeyType: HASH}
         - {AttributeName: action_timestamp, KeyType: RANGE}
+      SSESpecification: {SSEEnabled: true}
+
+  AgentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: agent_id, AttributeType: S}]
+      KeySchema: [{AttributeName: agent_id, KeyType: HASH}]
+      SSESpecification: {SSEEnabled: true}
+
+  IncidentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: incident_id, AttributeType: S}
+        - {AttributeName: timestamp, AttributeType: S}
+      KeySchema:
+        - {AttributeName: incident_id, KeyType: HASH}
+        - {AttributeName: timestamp, KeyType: RANGE}
       SSESpecification: {SSEEnabled: true}
 
   ArtifactsBucket:
