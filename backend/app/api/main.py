@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 import asyncio
 import json
@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.storage import DynamoDBAuditStore, LocalAuditStore
 from app.tools import build_demo_components
+from app.security.auth import authenticate
 
 
 class ActionRequest(BaseModel):
@@ -93,6 +94,15 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
     application.state.gateway = gateway
     application.state.audit_store = audit_store
 
+    def authenticated_action(action_request: ActionRequest, authorization: str | None) -> Action:
+        token = authorization.removeprefix("Bearer ").strip() if authorization and authorization.startswith("Bearer ") else None
+        if not authenticate(token, action_request.agent_id):
+            raise HTTPException(status_code=401, detail="Invalid agent credential")
+        try:
+            return action_request.to_domain()
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @application.get("/health")
     def health() -> dict[str, str]:
         """Unauthenticated liveness probe; it exposes no policy or audit data."""
@@ -100,39 +110,40 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
 
     @application.post("/api/actions/evaluate")
     @application.post("/v1/actions/evaluate")
-    def evaluate_action(action_request: ActionRequest) -> dict[str, Any]:
-        try:
-            action = action_request.to_domain()
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-        return _result_response(gateway.execute(action))
+    def evaluate_action(action_request: ActionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Canonical pre-execution evaluation: this endpoint never runs a tool."""
+        return _gateway_result(gateway.authorize(authenticated_action(action_request, authorization)))
 
     @application.post("/v1/actions/{request_id}/approve")
-    def approve_action(request_id: str) -> dict[str, Any]:
+    def approve_action(request_id: str, body: dict[str, str], authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """Approval endpoint for a human/control-plane review integration."""
         try:
-            return _gateway_result(gateway.approve(request_id))
+            # Approval is a control-plane action. Require a configured credential;
+            # the action hash binds this transition to the original request.
+            if not authenticate((authorization or "").removeprefix("Bearer ").strip(), body.get("agent_id", "")):
+                raise HTTPException(status_code=401, detail="Invalid agent credential")
+            return _gateway_result(gateway.approve(request_id, body.get("action_hash")))
         except KeyError as error:
             raise HTTPException(status_code=404, detail="No pending REVIEW action for request_id") from error
 
     @application.post("/v1/actions/authorize")
-    def authorize_action(action_request: ActionRequest) -> dict[str, Any]:
+    def authorize_action(action_request: ActionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """Native-agent pre-execution decision endpoint; it never dispatches tools."""
         try:
-            return _gateway_result(gateway.authorize(action_request.to_domain()))
+            return _gateway_result(gateway.authorize(authenticated_action(action_request, authorization)))
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @application.post("/gateway/tool-call")
-    def gateway_tool_call(action_request: ActionRequest) -> dict[str, Any]:
+    def gateway_tool_call(action_request: ActionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """Agent-agnostic HTTP integration boundary; never dispatches around core."""
         try:
-            return _gateway_result(gateway.execute(action_request.to_domain()))
+            return _gateway_result(gateway.execute(authenticated_action(action_request, authorization)))
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @application.post("/mcp")
-    def mcp_gateway(message: dict[str, Any]) -> dict[str, Any]:
+    def mcp_gateway(message: dict[str, Any], authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """JSON-RPC MCP server surface: tools/call is guarded by this same gateway."""
         method, params, request_id = message.get("method"), message.get("params", {}), message.get("id")
         if method == "initialize":
@@ -149,7 +160,8 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
                    "data_classification": meta.get("data_classification", "internal"), "destination": meta.get("destination"),
                    "request_id": meta.get("request_id")}
         try:
-            result = gateway.execute(ActionRequest(**payload).to_domain())
+            request = ActionRequest(**payload)
+            result = gateway.execute(authenticated_action(request, authorization))
         except (ValueError, TypeError) as error:
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": str(error)}}
         body = _gateway_result(result)

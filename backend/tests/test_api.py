@@ -7,12 +7,13 @@ from fastapi.testclient import TestClient
 from app.api import create_app
 
 
-def test_evaluate_action_returns_guarded_decision_and_audited_trace(tmp_path):
+def test_evaluate_action_returns_guarded_decision_and_audited_trace(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRISHTI_DEMO_TOKEN", "test-token")
     client = TestClient(create_app(tmp_path / "audit.jsonl"))
 
     response = client.post(
         "/api/actions/evaluate",
-        json={
+        headers={"Authorization": "Bearer test-token"}, json={
             "agent_id": "invoicebot",
             "tool": "send_email",
             "operation": "send",
@@ -29,13 +30,14 @@ def test_evaluate_action_returns_guarded_decision_and_audited_trace(tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {
-        "request_id": "api-action-1", "tool": "send_email", "status": "succeeded",
-        "decision": "allow", "reasons": [], "executed": True, "reason": None,
-        "data": {"sent": True, "to": "verified.user@example.com", "source": "synthetic-local-email"},
+        "request_id": "api-action-1", "tool": "send_email", "status": "authorized",
+        "decision": "allow", "reasons": [], "executed": False, "reason": None,
+        "data": {}, "risk_score": 0, "risk_level": "LOW", "risk_flags": [],
+        "decision_reasons": [], "policy_rule": "InvoiceBot Least Privilege", "execution_status": "authorized",
     }
     trace = client.get("/api/traces/api-action-1")
     assert trace.status_code == 200
-    assert trace.json()["events"][0]["executed"] is True
+    assert trace.json()["events"][0]["executed"] is False
 
 
 def test_safe_invoice_demo_returns_allowed_executed_trace(tmp_path):

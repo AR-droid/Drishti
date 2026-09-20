@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Mapping
 from uuid import uuid4
+import hashlib
+import json
 
 
 class Provenance(StrEnum):
@@ -52,6 +54,8 @@ class ToolStatus(StrEnum):
     AUTHORIZED = "authorized"  # Decision made; a native agent has not executed yet.
     DENIED = "denied"  # Kept for callers using the original ToolCall API.
     FAILED = "failed"
+    PENDING_APPROVAL = "pending_approval"
+    NOT_EXECUTED = "not_executed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +158,15 @@ class Action:
                 raise ValueError(f"Action.{name} must be a non-empty string")
         if not isinstance(self.provenance, Provenance) or not isinstance(self.data_classification, DataClassification):
             raise ValueError("Action provenance and data_classification must be typed enums")
+
+    @property
+    def action_hash(self) -> str:
+        """Stable identity for an approval; excludes transport/correlation fields."""
+        payload = {"agent_id": self.agent_id, "tool": self.tool, "operation": self.operation,
+                   "resource": self.resource, "arguments": self.arguments, "scope": self.scope,
+                   "user_intent": self.user_intent, "provenance": self.provenance.value,
+                   "data_classification": self.data_classification.value, "destination": self.destination}
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,12 +30,13 @@ class Drishti:
         should omit ``executor`` and consume the returned protected-tool result.
         """
         result = self.evaluate(**action)
-        if result["decision"] != "allow" or not result["executed"]:
+        if result["decision"] != "allow":
             raise PermissionError(f"DRISHTI {result['decision']}: {result.get('reasons', [])}")
         if executor is not None:
             # For embedded/local adapters, this callable must be a gateway-owned
             # capability. Passing arbitrary direct tool credentials is unsupported.
             result["executor_result"] = executor(**action.get("arguments", {}))
+            result["executed"] = True
         return result
 
 def protect(tools: Iterable[Callable], gateway, action_factory: Callable[[Callable, tuple, dict], Action]):

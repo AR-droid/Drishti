@@ -6,11 +6,15 @@
   "main": "dist/index.js",
   "configSchema": {
     "type": "object",
-    "required": ["endpoint", "agentId", "credentialEnv"],
+    "required": ["DRISHTI_BASE_URL", "DRISHTI_AGENT_ID", "DRISHTI_TOKEN"],
     "properties": {
       "endpoint": {"type": "string", "description": "DRISHTI API base URL"},
+      "DRISHTI_BASE_URL": {"type": "string", "description": "DRISHTI API base URL"},
       "agentId": {"type": "string", "description": "Registered DRISHTI agent ID"},
+      "DRISHTI_AGENT_ID": {"type": "string", "description": "Registered DRISHTI agent ID"},
       "credentialEnv": {"type": "string", "description": "Environment variable holding a scoped bearer credential"},
+      "DRISHTI_TOKEN": {"type": "string", "description": "Environment variable holding a scoped bearer credential; never the token itself"},
+      "DRISHTI_FAIL_MODE": {"type": "string", "enum": ["closed"], "default": "closed"},
       "failOpen": {"type": "boolean", "default": false, "description": "Must remain false for protected tools."}
     }
   }
