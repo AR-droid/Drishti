@@ -1,6 +1,6 @@
 """Authorization and enforcement primitives."""
 
 from .enforcement import EnforcedToolGateway, ToolExecutor
-from .policy import ToolPolicy
+from .policy import PolicyEvaluation, ToolPolicy
 
-__all__ = ["EnforcedToolGateway", "ToolExecutor", "ToolPolicy"]
+__all__ = ["EnforcedToolGateway", "PolicyEvaluation", "ToolExecutor", "ToolPolicy"]
