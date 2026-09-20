@@ -1,100 +1,156 @@
-# DRISHTI — Dynamic Runtime Inspection & Security for Trusted AI
+# DRISHTI
 
-**SEE. VERIFY. CONTROL.** DRISHTI is an agent-agnostic runtime authorization boundary for tool-using AI systems. It accepts normalized actions from MCP, HTTP/API, and Python SDK integrations, evaluates deterministic security signals, and only then dispatches a protected tool. **Data is not authority:** text from a document, webpage, email, tool result, or MCP tool description never inherits the user's authority.
+> **See. Verify. Control.**
 
-DRISHTI does not claim to eliminate prompt injection. It limits the impact of prompt injection by preventing unauthorized agent actions from reaching protected tools.
+DRISHTI is a runtime authorization boundary for tool-using AI systems. It receives a proposed action from an HTTP client, MCP client, or Python SDK; evaluates deterministic policy and risk signals; and **only then** dispatches a protected tool.
 
-## Architecture
+**Data is not authority.** Text from documents, webpages, email, tool results, and MCP descriptions can provide context but never inherits a user's permissions.
 
+## How it works
+
+```text
+Agent (HTTP / MCP / SDK)
+        │ proposed action + provenance + intent
+        ▼
+DRISHTI gateway: normalize → authorize → assess risk → decide
+        │
+  ALLOW │ REVIEW / BLOCK
+        ▼      └── audit event; adapter never runs
+Protected tool
 ```
-Any agent (MCP / HTTP / SDK) -> DRISHTI gateway -> normalized Action
-    -> deterministic risk engine + policy -> ALLOW | REVIEW | BLOCK -> protected tool
-```
 
-The core is framework-neutral: it contains no framework- or OpenClaw-specific authorization branch. OpenClaw is an MCP integration target only; it has not been tested in this repository.
+| Decision | Result |
+| --- | --- |
+| `ALLOW` | The protected adapter may execute and the decision is audited. |
+| `REVIEW` | Execution stops pending explicit approval. |
+| `BLOCK` | Execution stops before the adapter receives the action. |
 
-### Deterministic risk and decisions
+DRISHTI does not claim to eliminate prompt injection. It limits the impact of prompt injection by preventing unauthorized actions from reaching protected tools.
 
-`RuntimeRiskEngine` is shared by local execution and the Lambda package. It calculates a 0–100 score from fixed weighted signals: agent/tool authorization (35 each), broad scope (24), untrusted provenance (20), sensitive data (16), unverified destination (15), destructive operation (24), intent mismatch (22), behavioral deviation (12), privilege escalation (12), and risky chains (8). Levels are LOW <25, MEDIUM <50, HIGH <75, CRITICAL >=75. The score is explainability and review input—not the sole block rule. Deterministic policy and authorization remain authoritative.
+## Product experience
 
-Unknown registered tools and unauthorized registered agents block. External or unverified destinations review (or block when another policy violation exists). The output includes decision, score, level, flags, policy rule, reasons, and execution status. A BLOCK/REVIEW is never dispatched to an adapter.
+The Vite console is a local operations surface for the enforcement gateway. It offers a live backend-derived event stream, safe and malicious InvoiceBot demonstrations, an action inspector with validation, forensic traces, and an append-only audit view. The interface never fabricates security decisions when the gateway is unavailable.
 
-## Integration interfaces
+The included `DemoAgent` and fictional InvoiceBot are deterministic local harnesses, not a production LLM integration. Use the HTTP, MCP, or SDK boundary to connect a real tool-calling agent.
 
-* **HTTP:** `POST /v1/actions/evaluate` (and `/gateway/tool-call`) accepts normalized Actions and returns a decision, risk score, flags, reasons, and request ID. `POST /v1/actions/{request_id}/approve` is the explicit approval path for REVIEW; it never dispatches before approval.
-* **MCP:** `POST /mcp` is a JSON-RPC MCP surface implementing `initialize`, `tools/list`, and guarded `tools/call`. Put DRISHTI in front of tool adapters and attach action metadata in `params._drishti` (`agent_id`, intent, scope, provenance, classification). Every call enters `EnforcedToolGateway`; there is no unguarded MCP call route.
-* **SDK:** `from drishti import Drishti`; the SDK submits to the same gateway policy rather than implementing a divergent client policy. It raises `PermissionError` for REVIEW/BLOCK.
-* **SSE:** `GET /api/events` emits backend audit-derived ALLOW/REVIEW/BLOCK events. It does not fabricate frontend events.
+## Quick start
 
-The deterministic `DemoAgent` and fictional InvoiceBot remain a local test harness, not a claim of a real LLM agent. Deployers can replace it with a tool-calling agent using the HTTP/MCP boundary. No credentials are required for the local fallback demonstration.
+### Start the gateway
 
-## Attack trace and audit
-
-Events are append-only and keyed by `request_id`; the trace retains user intent, agent, source provenance, action, risk assessment, policy, decision, and execution status. The malicious InvoiceBot flow uses document provenance and requests `ALL_CUSTOMERS`; it is blocked before the customer or email adapter runs.
-
-## Local development
+Requires Python 3.11+.
 
 ```bash
 cd backend
-python -m venv .venv && . .venv/bin/activate
+python -m venv .venv
+. .venv/bin/activate
 pip install -e '.[dev]'
 uvicorn app.api.main:app --reload --port 8000
-# separate terminal
-curl -X POST http://localhost:8000/api/demo/safe-invoice
-curl -X POST http://localhost:8000/api/demo/malicious-invoice
-pytest -q
-drishti status
-drishti agents
-drishti logs
-drishti policy
 ```
 
-Set `DRISHTI_MODE=local` (the default operational mode) and optionally `DRISHTI_AUDIT_PATH`. `drishti start/status` reports in-process runtime components; use the uvicorn process manager to start/stop the server. Agent state is derived from audit activity, so unconnected integrations are never reported as connected.
+Local mode is the default and writes append-only audit events to `drishti-audit.jsonl` unless `DRISHTI_AUDIT_PATH` is set.
 
-### OpenClaw (safe MCP adapter workflow)
+### Start the console
 
-OpenClaw is an MCP client integration, not a special authorization path. Authenticate
-without printing the token, start the gateway, and generate a reviewed MCP entry:
+In a second terminal, from the repository root:
+
+```bash
+npm install
+npm run dev
+```
+
+Open Vite's printed URL (normally `http://localhost:5173`). The development server proxies `/api` calls to `http://localhost:8000`.
+
+### Verify the boundary
+
+Use the console's demo controls, or run:
+
+```bash
+curl -X POST http://localhost:8000/api/demo/safe-invoice
+curl -X POST http://localhost:8000/api/demo/malicious-invoice
+```
+
+The malicious path uses document provenance and broad customer scope. Its proposed tool call is blocked and the protected adapters do not execute.
+
+## Integrate an agent
+
+### HTTP
+
+`POST /v1/actions/evaluate` (also `/api/actions/evaluate`) returns the decision, reasons, execution status, and request ID. `POST /gateway/tool-call` provides the fuller protocol response. A REVIEW can be approved through `POST /v1/actions/{request_id}/approve`; it never dispatches before approval.
+
+```bash
+curl -X POST http://localhost:8000/v1/actions/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"agent_id":"invoicebot","tool":"query_customer","operation":"query","resource":"customer_records","arguments":{"customer":"Acme Corp"},"scope":"CURRENT_CUSTOMER","user_intent":"Look up Acme Corp","provenance":"user","data_classification":"confidential"}'
+```
+
+### Python SDK
+
+```python
+from drishti import Drishti
+
+security = Drishti("http://127.0.0.1:8000")
+result = security.execute(
+    agent_id="invoicebot", tool="query_customer", operation="query",
+    resource="customers", arguments={"customer": "Acme Corp"},
+    scope="CURRENT_CUSTOMER", user_intent="Look up Acme Corp customer",
+    provenance="user", data_classification="confidential",
+)
+```
+
+The SDK submits to the gateway and has no local policy fallback; it raises `PermissionError` for REVIEW or BLOCK.
+
+### MCP and OpenClaw
+
+`POST /mcp` is a guarded JSON-RPC MCP surface implementing `initialize`, `tools/list`, and `tools/call`. Add action metadata in `params._drishti`: `agent_id`, `operation`, `resource`, `scope`, `user_intent`, `provenance`, `data_classification`, and optional destination/request ID. Every MCP call enters the same `EnforcedToolGateway`; there is no unguarded MCP execution route.
+
+OpenClaw is an MCP client integration target, not a special authorization path:
 
 ```bash
 export DRISHTI_TOKEN='token supplied by your control plane' # never commit or log it
 drishti login
 drishti start
-export OPENCLAW_CONFIG=/path/to/openclaw/config.json  # when not in a conventional location
 drishti connect openclaw
 ```
 
-`connect openclaw` detects a real local configuration and writes a mode-0600,
-secret-free `~/.drishti/openclaw-mcp.json` Streamable HTTP MCP snippet. It does not
-rewrite OpenClaw configuration because an unknown OpenClaw schema/version cannot be
-safely guessed. Merge that exact entry into OpenClaw's MCP configuration and restart
-OpenClaw. Never give OpenClaw direct protected-tool credentials: it is protected only
-when its calls use DRISHTI's `/mcp` endpoint.
+`connect openclaw` writes a mode-0600, secret-free `~/.drishti/openclaw-mcp.json` snippet without guessing or rewriting an unknown OpenClaw configuration schema. Keep protected-tool credentials away from the MCP client; protection applies only when calls use DRISHTI's `/mcp` endpoint.
 
-### Custom Python agent
+## Decisions, risk, and audit
 
-```python
-from drishti import Drishti
-security = Drishti("http://127.0.0.1:8000")
-result = security.execute(agent_id="invoicebot", tool="query_customer", operation="query",
-    resource="customers", arguments={"customer": "Acme Corp"}, scope="CURRENT_CUSTOMER",
-    user_intent="Look up Acme Corp customer", provenance="user", data_classification="confidential")
+`RuntimeRiskEngine` calculates a deterministic 0–100 score from fixed signals including authorization, broad scope, untrusted provenance, sensitive data, destination verification, destructive operations, intent mismatch, behavioral deviation, privilege escalation, and risky chains. Levels are LOW `<25`, MEDIUM `<50`, HIGH `<75`, and CRITICAL `>=75`.
+
+The score supports explainability and review; it is not the only block mechanism. Policy and agent/tool authorization are authoritative. Unknown registered tools and unauthorized registered agents block. External or unverified destinations review, or block when combined with another policy violation. Audit records retain request ID, intent, provenance, action, risk assessment, policy decision, reasons, and execution status without storing unnecessary tool payloads.
+
+## Quality checks
+
+```bash
+# Frontend, from the repository root
+npm run lint
+npm run build
+
+# Backend
+cd backend
+python -m pytest -q
 ```
 
-The SDK has no local policy fallback: a gateway failure does not call an executor.
+## AWS deployment
 
-## AWS mode
-
-Set `DRISHTI_MODE=aws` and `DRISHTI_STORAGE_BACKEND=dynamodb`. The SAM template deploys API Gateway HTTP API -> Lambda -> this same core package, DynamoDB policy/action/event/trace stores, encrypted/versioned private S3 artifacts, JSON CloudWatch access logs, X-Ray tracing, and least-privilege runtime IAM. Amplify Hosting serves the Vite frontend; configure `VITE_API_URL` to the API output rather than committing an endpoint.
+Set `DRISHTI_MODE=aws` and `DRISHTI_STORAGE_BACKEND=dynamodb`. The SAM template deploys API Gateway HTTP API → Lambda → the same core package, DynamoDB policy/action/event/trace stores, encrypted private S3 artifacts, CloudWatch access logs, X-Ray tracing, and scoped runtime IAM.
 
 ```bash
 sam build --template-file infra/template.yaml
 sam deploy --guided --template-file infra/template.yaml
-npm ci && VITE_API_URL=https://YOUR_API.execute-api.REGION.amazonaws.com/dev npm run build
+npm install
+VITE_API_URL=https://YOUR_API.execute-api.REGION.amazonaws.com/dev npm run build
 ```
 
-Deployment credentials are required only for deployment. Runtime IAM is scoped to the created tables, permitted artifact prefixes, and function log group; credentials are never hard-coded. DynamoDB stores security metadata rather than unnecessary tool payloads. Configure MCP clients to point at the deployed `/mcp` endpoint and supply registered agent metadata.
+Deployment credentials are required only for deployment and must never be committed. Point MCP clients to the deployed `/mcp` endpoint and configure the console with the deployed API URL rather than hard-coding an endpoint.
 
-## Limitations and deployment hardening
+## Production checklist
 
-Policy configuration is currently code-composed with a DynamoDB persistence abstraction; production deployments should load signed/versioned policies, authenticate agents at the gateway, authenticate MCP transport, and route protected tools through service identities that agents cannot bypass. REVIEW needs an approval workflow integration before automatic execution. No AWS deployment, Amplify deployment, or OpenClaw connection has been performed here.
+- Authenticate agents and MCP transport at the gateway.
+- Load signed, versioned policy rather than relying solely on code-composed policy.
+- Route protected tools through service identities that agents cannot bypass.
+- Connect REVIEW to a human approval workflow before permitting automatic execution.
+- Restrict audit access and retain only the security metadata your organization needs.
+
+See [`backend/README.md`](backend/README.md) for implementation notes and [`infra/README.md`](infra/README.md) for infrastructure details.
