@@ -61,6 +61,9 @@ export function createDrishtiPlugin(api) {
     if (!response.ok) return block(`security service rejected evaluation (${response.status})`);
     let result;
     try { result = await response.json(); } catch { return block("invalid security response"); }
+    if (!result || typeof result !== "object" || !["allow", "block", "review"].includes(result.decision)) {
+      return block("invalid security response");
+    }
     if (result.decision === "allow") return undefined;
     if (result.decision === "review") {
       // An approval-capable OpenClaw runtime may render this as approval UI; in
