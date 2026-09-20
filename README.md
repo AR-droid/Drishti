@@ -21,9 +21,9 @@ Unknown registered tools and unauthorized registered agents block. External or u
 
 ## Integration interfaces
 
-* **HTTP:** `POST /gateway/tool-call` accepts the normalized Action JSON. The legacy `/api/actions/evaluate` remains supported.
+* **HTTP:** `POST /v1/actions/evaluate` (and `/gateway/tool-call`) accepts normalized Actions and returns a decision, risk score, flags, reasons, and request ID. `POST /v1/actions/{request_id}/approve` is the explicit approval path for REVIEW; it never dispatches before approval.
 * **MCP:** `POST /mcp` is a JSON-RPC MCP surface implementing `initialize`, `tools/list`, and guarded `tools/call`. Put DRISHTI in front of tool adapters and attach action metadata in `params._drishti` (`agent_id`, intent, scope, provenance, classification). Every call enters `EnforcedToolGateway`; there is no unguarded MCP call route.
-* **SDK:** `from drishti import protect`; pass tool callables, a gateway, and an Action metadata factory. The wrapper raises `PermissionError` rather than invoking a denied tool.
+* **SDK:** `from drishti import Drishti`; the SDK submits to the same gateway policy rather than implementing a divergent client policy. It raises `PermissionError` for REVIEW/BLOCK.
 * **SSE:** `GET /api/events` emits backend audit-derived ALLOW/REVIEW/BLOCK events. It does not fabricate frontend events.
 
 The deterministic `DemoAgent` and fictional InvoiceBot remain a local test harness, not a claim of a real LLM agent. Deployers can replace it with a tool-calling agent using the HTTP/MCP boundary. No credentials are required for the local fallback demonstration.
@@ -50,6 +50,38 @@ drishti policy
 ```
 
 Set `DRISHTI_MODE=local` (the default operational mode) and optionally `DRISHTI_AUDIT_PATH`. `drishti start/status` reports in-process runtime components; use the uvicorn process manager to start/stop the server. Agent state is derived from audit activity, so unconnected integrations are never reported as connected.
+
+### OpenClaw (safe MCP adapter workflow)
+
+OpenClaw is an MCP client integration, not a special authorization path. Authenticate
+without printing the token, start the gateway, and generate a reviewed MCP entry:
+
+```bash
+export DRISHTI_TOKEN='token supplied by your control plane' # never commit or log it
+drishti login
+drishti start
+export OPENCLAW_CONFIG=/path/to/openclaw/config.json  # when not in a conventional location
+drishti connect openclaw
+```
+
+`connect openclaw` detects a real local configuration and writes a mode-0600,
+secret-free `~/.drishti/openclaw-mcp.json` Streamable HTTP MCP snippet. It does not
+rewrite OpenClaw configuration because an unknown OpenClaw schema/version cannot be
+safely guessed. Merge that exact entry into OpenClaw's MCP configuration and restart
+OpenClaw. Never give OpenClaw direct protected-tool credentials: it is protected only
+when its calls use DRISHTI's `/mcp` endpoint.
+
+### Custom Python agent
+
+```python
+from drishti import Drishti
+security = Drishti("http://127.0.0.1:8000")
+result = security.execute(agent_id="invoicebot", tool="query_customer", operation="query",
+    resource="customers", arguments={"customer": "Acme Corp"}, scope="CURRENT_CUSTOMER",
+    user_intent="Look up Acme Corp customer", provenance="user", data_classification="confidential")
+```
+
+The SDK has no local policy fallback: a gateway failure does not call an executor.
 
 ## AWS mode
 

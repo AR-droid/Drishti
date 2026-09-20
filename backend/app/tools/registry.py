@@ -16,8 +16,11 @@ def build_demo_components(audit_path: Path, audit_store: AuditStore | None = Non
                 "invoicebot": frozenset(_ADAPTERS),
                 "demo-user": frozenset(_ADAPTERS),
                 "readonly-demo": frozenset({"customer.lookup", "search_documents", "read_document"}),
+                # The OpenClaw adapter is an MCP client identity; it receives no
+                # direct adapter capability and is authorized only at this gateway.
+                "openclaw-local": frozenset(_ADAPTERS),
             },
-            registered_agents=frozenset({"invoicebot", "demo-user", "readonly-demo"}),
+            registered_agents=frozenset({"invoicebot", "demo-user", "readonly-demo", "openclaw-local"}),
             name="InvoiceBot Least Privilege",
         ),
         _ADAPTERS,
