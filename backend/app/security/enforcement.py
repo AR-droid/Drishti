@@ -14,6 +14,9 @@ class EnforcedToolGateway:
     def __init__(self, policy: ToolPolicy, adapters: Mapping[str, Adapter], audit_sink: AuditSink, risk_engine: RuntimeRiskEngine | None = None):
         self._policy, self._adapters, self._audit_sink = policy, dict(adapters), audit_sink
         self._risk, self._history = risk_engine or RuntimeRiskEngine(), {}
+        # A review is a pending capability, not an adapter invocation.  Keeping the
+        # original Action here means approval uses exactly the evaluation boundary.
+        self._pending: dict[str, Action] = {}
     def execute(self, action: Action | ToolCall) -> ToolResult:
         legacy_call = action if isinstance(action, ToolCall) else None
         action = action.to_action() if legacy_call else action
@@ -32,6 +35,8 @@ class EnforcedToolGateway:
             if legacy_call and action.tool not in self._policy.allowed_tools: legacy_reason = f"Tool '{action.tool}' is not registered."
             elif legacy_call and DecisionReason.UNAUTHORIZED_AGENT in reasons: legacy_reason = f"Actor '{action.agent_id}' is not permitted to use '{action.tool}'."
             result = ToolResult(ToolStatus.DENIED, action.tool, action.request_id, reason=legacy_reason or ", ".join(reasons), decision=decision, decision_reasons=reasons, executed=False, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
+            if decision is SecurityDecision.REVIEW:
+                self._pending[action.request_id] = action
         elif (adapter := self._adapters.get(action.tool)) is None:
             result = ToolResult(ToolStatus.DENIED, action.tool, action.request_id, reason="UNKNOWN_TOOL", decision=SecurityDecision.BLOCK, decision_reasons=(DecisionReason.UNKNOWN_TOOL,), risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule="known-tools-only")
         else:
@@ -40,5 +45,26 @@ class EnforcedToolGateway:
             except (TypeError, ValueError) as error:
                 result = ToolResult(ToolStatus.FAILED, action.tool, action.request_id, reason=f"Synthetic adapter rejected input: {error}", decision=SecurityDecision.ALLOW, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
         self._history.setdefault(action.request_id, []).append(action)
+        self._audit_sink.record(action, result)
+        return result
+
+    def approve(self, request_id: str) -> ToolResult:
+        """Execute a previously REVIEWed action only after explicit approval.
+
+        This method deliberately cannot approve BLOCK actions: only actions placed
+        in ``_pending`` by the REVIEW branch have an executable capability.
+        """
+        action = self._pending.pop(request_id, None)
+        if action is None:
+            raise KeyError("No pending review for request_id")
+        adapter = self._adapters.get(action.tool)
+        if adapter is None:  # fail closed even if configuration changed meanwhile
+            result = ToolResult(ToolStatus.DENIED, action.tool, request_id, reason="UNKNOWN_TOOL", decision=SecurityDecision.BLOCK, decision_reasons=(DecisionReason.UNKNOWN_TOOL,))
+        else:
+            try:
+                result = ToolResult(ToolStatus.SUCCEEDED, action.tool, request_id, data=dict(adapter(action.arguments)), decision=SecurityDecision.ALLOW, executed=True, policy_rule="explicit-review-approval")
+            except (TypeError, ValueError) as error:
+                result = ToolResult(ToolStatus.FAILED, action.tool, request_id, reason=f"Adapter rejected input: {error}", decision=SecurityDecision.ALLOW, policy_rule="explicit-review-approval")
+        self._history.setdefault(request_id, []).append(action)
         self._audit_sink.record(action, result)
         return result

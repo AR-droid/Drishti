@@ -92,12 +92,21 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
     application.state.audit_store = audit_store
 
     @application.post("/api/actions/evaluate")
+    @application.post("/v1/actions/evaluate")
     def evaluate_action(action_request: ActionRequest) -> dict[str, Any]:
         try:
             action = action_request.to_domain()
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return _result_response(gateway.execute(action))
+
+    @application.post("/v1/actions/{request_id}/approve")
+    def approve_action(request_id: str) -> dict[str, Any]:
+        """Approval endpoint for a human/control-plane review integration."""
+        try:
+            return _gateway_result(gateway.approve(request_id))
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="No pending REVIEW action for request_id") from error
 
     @application.post("/gateway/tool-call")
     def gateway_tool_call(action_request: ActionRequest) -> dict[str, Any]:

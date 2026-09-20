@@ -1,4 +1,4 @@
-from app.models import ToolCall, ToolStatus
+from app.models import Action, DataClassification, Provenance, ToolCall, ToolStatus
 from app.tools import build_demo_gateway
 
 
@@ -31,3 +31,18 @@ def test_gateway_enforces_per_actor_permissions(tmp_path):
 
     assert result.status is ToolStatus.DENIED
     assert "not permitted" in (result.reason or "")
+
+
+def test_review_never_calls_adapter_until_explicit_approval(tmp_path):
+    gateway = build_demo_gateway(tmp_path / "audit.jsonl")
+    action = Action("invoicebot", "send_email", "send", "invoice", {"to": "external@example.com"},
+                    "VERIFIED_USER", "Email my invoice", Provenance.USER,
+                    DataClassification.CONFIDENTIAL, destination="external", request_id="review-1")
+
+    pending = gateway.execute(action)
+
+    assert pending.decision.value == "review"
+    assert pending.executed is False
+    approved = gateway.approve("review-1")
+    assert approved.executed is True
+    assert approved.data["sent"] is True
