@@ -20,6 +20,28 @@ class EnforcedToolGateway:
     def execute(self, action: Action | ToolCall) -> ToolResult:
         legacy_call = action if isinstance(action, ToolCall) else None
         action = action.to_action() if legacy_call else action
+        result = self.authorize(legacy_call or action, record=False)
+        if result.decision is not SecurityDecision.ALLOW:
+            self._audit_sink.record(action, result)
+            return result
+        adapter = self._adapters.get(action.tool)
+        assert adapter is not None  # authorize() has already checked this.
+        try:
+            result = ToolResult(ToolStatus.SUCCEEDED, action.tool, action.request_id, data=dict(adapter(action.arguments)), decision=SecurityDecision.ALLOW, executed=True, risk_score=result.risk_score, risk_level=result.risk_level, risk_flags=result.risk_flags, policy_rule=result.policy_rule)
+        except (TypeError, ValueError) as error:
+            result = ToolResult(ToolStatus.FAILED, action.tool, action.request_id, reason=f"Synthetic adapter rejected input: {error}", decision=SecurityDecision.ALLOW, risk_score=result.risk_score, risk_level=result.risk_level, risk_flags=result.risk_flags, policy_rule=result.policy_rule)
+        self._audit_sink.record(action, result)
+        return result
+
+    def authorize(self, action: Action | ToolCall, *, record: bool = True) -> ToolResult:
+        """Evaluate and audit an action without invoking an adapter.
+
+        Native agent integrations use this method: DRISHTI authorizes *before*
+        the agent runtime executes its own tool.  An ALLOW is deliberately not
+        reported as executed, because this process did not execute that tool.
+        """
+        legacy_call = action if isinstance(action, ToolCall) else None
+        action = action.to_action() if legacy_call else action
         history = tuple(self._history.get(action.request_id, ()))
         known_agent = self._policy.is_registered(action.agent_id)
         authorized = self._policy.is_authorized(action.agent_id, action.tool)
@@ -37,15 +59,13 @@ class EnforcedToolGateway:
             result = ToolResult(ToolStatus.DENIED, action.tool, action.request_id, reason=legacy_reason or ", ".join(reasons), decision=decision, decision_reasons=reasons, executed=False, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
             if decision is SecurityDecision.REVIEW:
                 self._pending[action.request_id] = action
-        elif (adapter := self._adapters.get(action.tool)) is None:
+        elif action.tool not in self._adapters:
             result = ToolResult(ToolStatus.DENIED, action.tool, action.request_id, reason="UNKNOWN_TOOL", decision=SecurityDecision.BLOCK, decision_reasons=(DecisionReason.UNKNOWN_TOOL,), risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule="known-tools-only")
         else:
-            try:
-                result = ToolResult(ToolStatus.SUCCEEDED, action.tool, action.request_id, data=dict(adapter(action.arguments)), decision=SecurityDecision.ALLOW, executed=True, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
-            except (TypeError, ValueError) as error:
-                result = ToolResult(ToolStatus.FAILED, action.tool, action.request_id, reason=f"Synthetic adapter rejected input: {error}", decision=SecurityDecision.ALLOW, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
+            result = ToolResult(ToolStatus.AUTHORIZED, action.tool, action.request_id, decision=SecurityDecision.ALLOW, executed=False, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
         self._history.setdefault(action.request_id, []).append(action)
-        self._audit_sink.record(action, result)
+        if record:
+            self._audit_sink.record(action, result)
         return result
 
     def approve(self, request_id: str) -> ToolResult:

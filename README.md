@@ -98,3 +98,40 @@ Deployment credentials are required only for deployment. Runtime IAM is scoped t
 ## Limitations and deployment hardening
 
 Policy configuration is currently code-composed with a DynamoDB persistence abstraction; production deployments should load signed/versioned policies, authenticate agents at the gateway, authenticate MCP transport, and route protected tools through service identities that agents cannot bypass. REVIEW needs an approval workflow integration before automatic execution. No AWS deployment, Amplify deployment, or OpenClaw connection has been performed here.
+
+## Native OpenClaw enforcement (pre-release verification required)
+
+DRISHTI now ships a native package at `integrations/openclaw-plugin`. Unlike the MCP gateway, it registers OpenClaw's `before_tool_call` hook and calls the centralized `POST /v1/actions/authorize` endpoint **before** native OpenClaw executes a tool. The endpoint evaluates the existing `RuntimeRiskEngine` and policy without dispatching DRISHTI's synthetic adapters. An authorization audit event has `executed: false`; DRISHTI does not fabricate a native-tool execution result.
+
+```text
+OpenClaw native tool call -> DRISHTI before_tool_call plugin -> /v1/actions/authorize
+  -> RuntimeRiskEngine + policy -> ALLOW | REVIEW | BLOCK -> OpenClaw tool runtime
+```
+
+The plugin sends `agent_id`, tool identity, operation, resource, arguments, scope, user intent, provenance, classification, destination, `request_id`, `run_id`, and `session_id` when OpenClaw supplies them. It contains no TypeScript policy. A network error, missing credential, malformed response, or non-ALLOW response returns the OpenClaw block result; it never fails open. REVIEW returns a blocking approval-required result and therefore does not execute the tool. Approval resumption must be tested with the installed OpenClaw version before it is represented as a completed approval workflow.
+
+### Connect a real installation
+
+The repository does not include an OpenClaw binary, so no real-installation claim is made by this checkout. On a machine with OpenClaw installed, an active config, and the documented `openclaw plugins install` CLI command:
+
+```bash
+cd backend
+pip install -e '.[dev]'
+export DRISHTI_TOKEN='scoped bearer credential'       # source from a secret manager
+export DRISHTI_ENDPOINT='https://YOUR-DRISHTI-API'
+drishti login
+# start the local API only when DRISHTI_ENDPOINT is local
+drishti connect openclaw
+```
+
+`connect openclaw` detects both the `openclaw` executable and its active config, refuses to proceed without login and `/health`, asks OpenClaw itself to install the distributable plugin, and verifies it appears in `openclaw plugins list`. It writes only a mode-0600, secret-free configuration template in `~/.drishti/openclaw-plugin-config.json`; it does not guess or modify an unknown OpenClaw configuration schema. Put the indicated `DRISHTI_OPENCLAW_TOKEN` environment variable in the OpenClaw service's secret environment, apply the generated plugin settings using that OpenClaw version's documented configuration command, and restart OpenClaw.
+
+Before considering an instance protected, run and retain the following real-install verification: (1) an allowlisted call is allowed and executes; (2) a dangerous `query_customer` call with `scope=ALL_CUSTOMERS`, document provenance, and sensitive data is BLOCKed and its tool side effect does not occur; (3) a REVIEW call has no side effect before approval; (4) stopping DRISHTI blocks a protected call; and (5) fetch `GET /api/traces/{request_id}` and confirm its request/run/session metadata and `executed: false` enforcement record. The last field reflects what DRISHTI actually knows at the before-tool boundary, not a fabricated post-execution status.
+
+Run package-level checks without OpenClaw using:
+
+```bash
+cd integrations/openclaw-plugin
+npm test
+npm run build
+```

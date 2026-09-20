@@ -41,6 +41,8 @@ class ActionRequest(BaseModel):
     destination: str | None = None
     request_id: str | None = None
     timestamp: datetime | None = None
+    run_id: str | None = None
+    session_id: str | None = None
 
     def to_domain(self) -> Action:
         values: dict[str, Any] = self.model_dump(exclude_none=True)
@@ -91,6 +93,11 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
     application.state.gateway = gateway
     application.state.audit_store = audit_store
 
+    @application.get("/health")
+    def health() -> dict[str, str]:
+        """Unauthenticated liveness probe; it exposes no policy or audit data."""
+        return {"status": "ok", "service": "drishti-security-api"}
+
     @application.post("/api/actions/evaluate")
     @application.post("/v1/actions/evaluate")
     def evaluate_action(action_request: ActionRequest) -> dict[str, Any]:
@@ -107,6 +114,14 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
             return _gateway_result(gateway.approve(request_id))
         except KeyError as error:
             raise HTTPException(status_code=404, detail="No pending REVIEW action for request_id") from error
+
+    @application.post("/v1/actions/authorize")
+    def authorize_action(action_request: ActionRequest) -> dict[str, Any]:
+        """Native-agent pre-execution decision endpoint; it never dispatches tools."""
+        try:
+            return _gateway_result(gateway.authorize(action_request.to_domain()))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @application.post("/gateway/tool-call")
     def gateway_tool_call(action_request: ActionRequest) -> dict[str, Any]:

@@ -49,6 +49,7 @@ class DecisionReason(StrEnum):
 
 class ToolStatus(StrEnum):
     SUCCEEDED = "succeeded"
+    AUTHORIZED = "authorized"  # Decision made; a native agent has not executed yet.
     DENIED = "denied"  # Kept for callers using the original ToolCall API.
     FAILED = "failed"
 
@@ -80,6 +81,8 @@ class SecurityEvent:
     risk_level: str = "LOW"
     risk_flags: tuple[DecisionReason, ...] = ()
     policy_rule: str | None = None
+    run_id: str | None = None
+    session_id: str | None = None
 
     @classmethod
     def from_action_result(cls, action: Action, result: ToolResult) -> SecurityEvent:
@@ -93,6 +96,7 @@ class SecurityEvent:
             execution_status=result.status, executed=result.executed, risk_score=result.risk_score,
             risk_level=result.risk_level, risk_flags=result.risk_flags, policy_rule=result.policy_rule,
             timestamp=action.timestamp,
+            run_id=action.run_id, session_id=action.session_id,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -109,6 +113,7 @@ class SecurityEvent:
             "risk_score": self.risk_score, "risk_level": self.risk_level,
             "risk_flags": [flag.value for flag in self.risk_flags], "policy_rule": self.policy_rule,
             "timestamp": self.timestamp.isoformat(),
+            "run_id": self.run_id, "session_id": self.session_id,
         }
 
 
@@ -140,6 +145,8 @@ class Action:
     destination: str | None = None
     request_id: str = field(default_factory=lambda: str(uuid4()))
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    run_id: str | None = None
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("agent_id", "tool", "operation", "resource", "scope", "user_intent", "request_id"):

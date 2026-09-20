@@ -1,0 +1,11 @@
+{
+  "name": "@drishti/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "Fail-closed DRISHTI before_tool_call enforcement for OpenClaw",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": ["dist", "openclaw.plugin.json", "README.md"],
+  "scripts": { "build": "node scripts/build.mjs", "test": "node --test test/*.test.mjs" },
+  "engines": { "node": ">=20" },
+  "peerDependencies": { "openclaw": ">=0.0.0" }
+}

@@ -73,4 +73,6 @@ class LocalAuditStore:
             risk_flags=tuple(DecisionReason(str(reason)) for reason in item.get("risk_flags", [])),
             policy_rule=item.get("policy_rule") if isinstance(item.get("policy_rule"), str) else None,
             timestamp=datetime.fromisoformat(str(item["timestamp"])),
+            run_id=item.get("run_id") if isinstance(item.get("run_id"), str) else None,
+            session_id=item.get("session_id") if isinstance(item.get("session_id"), str) else None,
         )
