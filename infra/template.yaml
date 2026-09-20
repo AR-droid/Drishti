@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Secure serverless deployment of the DRISHTI enforcement API.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedPattern: '^[a-z0-9-]+$'
+  FrontendAllowedOrigins:
+    Type: CommaDelimitedList
+    Default: http://localhost:5173
+    Description: Comma-separated React/Amplify origins allowed to call the API.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 29
+    MemorySize: 512
+    Tracing: Active
+    LoggingConfig:
+      LogFormat: JSON
+      ApplicationLogLevel: INFO
+      SystemLogLevel: WARN
+
+Resources:
+  DrishtiApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+      CorsConfiguration:
+        AllowOrigins: !Ref FrontendAllowedOrigins
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [Content-Type, Authorization]
+        MaxAge: 600
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","routeKey":"$context.routeKey","status":"$context.status","responseLength":"$context.responseLength"}'
+
+  DrishtiApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: app.api.lambda_handler.handler
+      Environment:
+        Variables:
+          DRISHTI_STORAGE_BACKEND: dynamodb
+          DRISHTI_ENVIRONMENT: !Ref Environment
+          POLICIES_TABLE: !Ref PoliciesTable
+          SECURITY_EVENTS_TABLE: !Ref SecurityEventsTable
+          ATTACK_TRACES_TABLE: !Ref AttackTracesTable
+          ACTIONS_TABLE: !Ref ActionsTable
+          ARTIFACTS_BUCKET: !Ref ArtifactsBucket
+      Events:
+        ApiProxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DrishtiApi
+            Path: /{proxy+}
+            Method: ANY
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:PutItem]
+              Resource:
+                - !GetAtt SecurityEventsTable.Arn
+                - !GetAtt AttackTracesTable.Arn
+                - !GetAtt ActionsTable.Arn
+            - Effect: Allow
+              Action: [dynamodb:Query]
+              Resource: !GetAtt AttackTracesTable.Arn
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+              Resource: !GetAtt PoliciesTable.Arn
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub '${ArtifactsBucket.Arn}/safe/*'
+                - !Sub '${ArtifactsBucket.Arn}/malicious/*'
+                - !Sub '${ArtifactsBucket.Arn}/attack/*'
+            # CloudWatch Logs requires CreateLogGroup on * because no group exists
+            # before the first invocation; subsequent actions are scoped to this function.
+            - Effect: Allow
+              Action: logs:CreateLogGroup
+              Resource: '*'
+            - Effect: Allow
+              Action: [logs:CreateLogStream, logs:PutLogEvents]
+              Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${DrishtiApiFunction}:*'
+
+  PoliciesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: policy_id, AttributeType: S}]
+      KeySchema: [{AttributeName: policy_id, KeyType: HASH}]
+      SSESpecification: {SSEEnabled: true}
+
+  SecurityEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: event_id, AttributeType: S}]
+      KeySchema: [{AttributeName: event_id, KeyType: HASH}]
+      SSESpecification: {SSEEnabled: true}
+
+  AttackTracesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: request_id, AttributeType: S}
+        - {AttributeName: event_timestamp, AttributeType: S}
+      KeySchema:
+        - {AttributeName: request_id, KeyType: HASH}
+        - {AttributeName: event_timestamp, KeyType: RANGE}
+      SSESpecification: {SSEEnabled: true}
+
+  ActionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: request_id, AttributeType: S}
+        - {AttributeName: action_timestamp, AttributeType: S}
+      KeySchema:
+        - {AttributeName: request_id, KeyType: HASH}
+        - {AttributeName: action_timestamp, KeyType: RANGE}
+      SSESpecification: {SSEEnabled: true}
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption: {ServerSideEncryptionConfiguration: [{ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}}]}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls: {Rules: [{ObjectOwnership: BucketOwnerEnforced}]}
+      VersioningConfiguration: {Status: Enabled}
+      LifecycleConfiguration:
+        Rules: [{Id: RetainAuditArtifacts, Status: Enabled, NoncurrentVersionExpiration: {NoncurrentDays: 90}}]
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway invoke URL (append /api/actions/evaluate, etc.).
+    Value: !Sub 'https://${DrishtiApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}'
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+  AttackTracesTableName:
+    Value: !Ref AttackTracesTable

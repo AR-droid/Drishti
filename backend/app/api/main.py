@@ -19,7 +19,7 @@ from app.models import (
     SecurityEvent,
     ToolResult,
 )
-from app.storage import LocalAuditStore
+from app.storage import DynamoDBAuditStore, LocalAuditStore
 from app.tools import build_demo_components
 
 
@@ -70,7 +70,8 @@ def _trace_response(trace: AttackTrace) -> dict[str, Any]:
 def create_app(audit_path: Path | None = None) -> FastAPI:
     """Create an app whose routes share one guarded gateway and audit store."""
     path = audit_path or Path(os.getenv("DRISHTI_AUDIT_PATH", "drishti-audit.jsonl"))
-    gateway, audit_store = build_demo_components(path)
+    audit_store = _audit_store(path)
+    gateway, audit_store = build_demo_components(path, audit_store)
     demo_agent = DemoAgent(gateway)
 
     application = FastAPI(title="DRISHTI API", version="0.1.0")
@@ -106,6 +107,21 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
         }
 
     return application
+
+
+def _audit_store(path: Path) -> LocalAuditStore | DynamoDBAuditStore:
+    """Keep JSONL as the local default; AWS explicitly opts into DynamoDB."""
+    if os.getenv("DRISHTI_STORAGE_BACKEND", "local").lower() != "dynamodb":
+        return LocalAuditStore(path)
+    required = ("SECURITY_EVENTS_TABLE", "ATTACK_TRACES_TABLE", "ACTIONS_TABLE")
+    values = {name: os.getenv(name) for name in required}
+    if not all(values.values()):
+        raise RuntimeError("DynamoDB storage requires SECURITY_EVENTS_TABLE, ATTACK_TRACES_TABLE, and ACTIONS_TABLE")
+    return DynamoDBAuditStore(
+        security_events_table=values["SECURITY_EVENTS_TABLE"] or "",
+        attack_traces_table=values["ATTACK_TRACES_TABLE"] or "",
+        actions_table=values["ACTIONS_TABLE"] or "",
+    )
 
 
 app = create_app()
