@@ -2,6 +2,8 @@
 from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
+from datetime import UTC, datetime, timedelta
+import hmac
 from app.models import Action, DecisionReason, SecurityDecision, ToolCall, ToolResult, ToolStatus
 from app.security.policy import ToolPolicy
 from app.security.risk import RuntimeRiskEngine
@@ -16,7 +18,7 @@ class EnforcedToolGateway:
         self._risk, self._history = risk_engine or RuntimeRiskEngine(), {}
         # A review is a pending capability, not an adapter invocation.  Keeping the
         # original Action here means approval uses exactly the evaluation boundary.
-        self._pending: dict[str, Action] = {}
+        self._pending: dict[str, tuple[Action, datetime]] = {}
     def execute(self, action: Action | ToolCall) -> ToolResult:
         legacy_call = action if isinstance(action, ToolCall) else None
         action = action.to_action() if legacy_call else action
@@ -49,16 +51,14 @@ class EnforcedToolGateway:
         evaluation = self._policy.evaluate(action)
         reasons = evaluation.reasons
         decision = evaluation.decision
-        # Policy/authorization are authoritative; score only guides safe review of high-impact actions.
-        if decision is SecurityDecision.ALLOW and assessment.score >= 50 and action.operation.casefold() in {"send", "write", "export", "execute", "delete"}:
-            decision = SecurityDecision.REVIEW
         if decision is not SecurityDecision.ALLOW:
             legacy_reason = None
             if legacy_call and action.tool not in self._policy.allowed_tools: legacy_reason = f"Tool '{action.tool}' is not registered."
             elif legacy_call and DecisionReason.UNAUTHORIZED_AGENT in reasons: legacy_reason = f"Actor '{action.agent_id}' is not permitted to use '{action.tool}'."
-            result = ToolResult(ToolStatus.DENIED, action.tool, action.request_id, reason=legacy_reason or ", ".join(reasons), decision=decision, decision_reasons=reasons, executed=False, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
+            status = ToolStatus.PENDING_APPROVAL if decision is SecurityDecision.REVIEW else ToolStatus.DENIED
+            result = ToolResult(status, action.tool, action.request_id, reason=legacy_reason or ", ".join(reasons), decision=decision, decision_reasons=reasons, executed=False, risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule=self._policy.rule_name(action))
             if decision is SecurityDecision.REVIEW:
-                self._pending[action.request_id] = action
+                self._pending[action.request_id] = (action, datetime.now(UTC) + timedelta(minutes=10))
         elif action.tool not in self._adapters:
             result = ToolResult(ToolStatus.DENIED, action.tool, action.request_id, reason="UNKNOWN_TOOL", decision=SecurityDecision.BLOCK, decision_reasons=(DecisionReason.UNKNOWN_TOOL,), risk_score=assessment.score, risk_level=assessment.level, risk_flags=assessment.flags, policy_rule="known-tools-only")
         else:
@@ -68,15 +68,18 @@ class EnforcedToolGateway:
             self._audit_sink.record(action, result)
         return result
 
-    def approve(self, request_id: str) -> ToolResult:
+    def approve(self, request_id: str, action_hash: str | None = None) -> ToolResult:
         """Execute a previously REVIEWed action only after explicit approval.
 
         This method deliberately cannot approve BLOCK actions: only actions placed
         in ``_pending`` by the REVIEW branch have an executable capability.
         """
-        action = self._pending.pop(request_id, None)
-        if action is None:
+        pending = self._pending.pop(request_id, None)
+        if pending is None:
             raise KeyError("No pending review for request_id")
+        action, expires_at = pending
+        if datetime.now(UTC) >= expires_at or (action_hash is not None and not hmac.compare_digest(action.action_hash, action_hash)):
+            raise KeyError("Review expired or does not match the approved action")
         adapter = self._adapters.get(action.tool)
         if adapter is None:  # fail closed even if configuration changed meanwhile
             result = ToolResult(ToolStatus.DENIED, action.tool, request_id, reason="UNKNOWN_TOOL", decision=SecurityDecision.BLOCK, decision_reasons=(DecisionReason.UNKNOWN_TOOL,))

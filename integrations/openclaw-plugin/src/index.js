@@ -1,7 +1,7 @@
 /** Native OpenClaw enforcement adapter. It intentionally contains no policy logic. */
 import { randomUUID } from "node:crypto";
 
-const UNTRUSTED = new Set(["document", "webpage", "email", "tool_result", "mcp_tool_description"]);
+const PROVENANCE = new Set(["user", "system", "agent", "document", "webpage", "email", "tool_result", "mcp_tool_description"]);
 const string = (value, fallback) => typeof value === "string" && value.trim() ? value : fallback;
 
 export function normalizeAction(event, config) {
@@ -17,8 +17,9 @@ export function normalizeAction(event, config) {
     resource: string(metadata.resource ?? tool, tool),
     arguments: call.arguments ?? call.input ?? {},
     scope: string(metadata.scope, "UNSPECIFIED"),
-    user_intent: string(metadata.user_intent ?? context.userIntent ?? context.user_intent, "OpenClaw tool request"),
-    provenance: UNTRUSTED.has(provenance) ? provenance : "agent",
+    // OpenClaw does not guarantee prompt history in this hook. Unknown is honest.
+    user_intent: string(metadata.user_intent ?? context.userIntent ?? context.user_intent, "unknown"),
+    provenance: PROVENANCE.has(provenance) ? provenance : "agent",
     data_classification: string(metadata.data_classification, "internal"),
     destination: metadata.destination,
     request_id: string(metadata.request_id ?? event?.requestId ?? context.requestId, randomUUID()),
@@ -35,15 +36,18 @@ function block(reason, decision = "block") {
 
 export function createDrishtiPlugin(api) {
   const config = api.config ?? {};
-  if (!config.endpoint || !config.agentId || !config.credentialEnv) {
-    throw new Error("DRISHTI plugin requires endpoint, agentId, and credentialEnv configuration");
+  const endpointValue = config.DRISHTI_BASE_URL ?? config.endpoint;
+  const agentId = config.DRISHTI_AGENT_ID ?? config.agentId;
+  const credentialEnv = config.DRISHTI_TOKEN ?? config.credentialEnv;
+  if (!endpointValue || !agentId || !credentialEnv) {
+    throw new Error("DRISHTI plugin requires DRISHTI_BASE_URL, DRISHTI_AGENT_ID, and DRISHTI_TOKEN (an environment variable name)");
   }
-  if (config.failOpen === true) throw new Error("DRISHTI failOpen is forbidden for protected tools");
-  const endpoint = `${config.endpoint.replace(/\/$/, "")}/v1/actions/authorize`;
+  if ((config.DRISHTI_FAIL_MODE ?? "closed") !== "closed" || config.failOpen === true) throw new Error("DRISHTI fail-open is forbidden for protected tools");
+  const endpoint = `${endpointValue.replace(/\/$/, "")}/v1/actions/evaluate`;
   api.on("before_tool_call", async (event) => {
-    const token = process.env[config.credentialEnv];
+    const token = process.env[credentialEnv];
     if (!token) return block("missing scoped credential");
-    const action = normalizeAction(event, config);
+    const action = normalizeAction(event, { ...config, agentId });
     let response;
     try {
       response = await fetch(endpoint, {

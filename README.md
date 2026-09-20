@@ -2,17 +2,17 @@
 
 > **See. Verify. Control.**
 
-DRISHTI is a runtime authorization boundary for tool-using AI systems. It receives a proposed action from an HTTP client, MCP client, or Python SDK; evaluates deterministic policy and risk signals; and **only then** dispatches a protected tool.
+DRISHTI is an agent-agnostic runtime authorization layer between AI agents and protected tools. Authenticated callers submit one normalized `Action`; the backend evaluates versioned policy, provenance, scope, intent metadata, and advisory risk, then enforces **ALLOW**, **REVIEW**, or **BLOCK** before a protected adapter runs.
 
 **Data is not authority.** Text from documents, webpages, email, tool results, and MCP descriptions can provide context but never inherits a user's permissions.
 
 ## How it works
 
 ```text
-Agent (HTTP / MCP / SDK)
+Agent (HTTP / Python SDK / MCP / OpenClaw)
         │ proposed action + provenance + intent
         ▼
-DRISHTI gateway: normalize → authorize → assess risk → decide
+DRISHTI core: authenticate → normalize → authorize → assess risk → decide
         │
   ALLOW │ REVIEW / BLOCK
         ▼      └── audit event; adapter never runs
@@ -21,7 +21,7 @@ Protected tool
 
 | Decision | Result |
 | --- | --- |
-| `ALLOW` | The protected adapter may execute and the decision is audited. |
+| `ALLOW` | The protected adapter may execute. A native runtime receives an authorization only; it reports its own execution separately. |
 | `REVIEW` | Execution stops pending explicit approval. |
 | `BLOCK` | Execution stops before the adapter receives the action. |
 
@@ -75,11 +75,12 @@ The malicious path uses document provenance and broad customer scope. Its propos
 
 ### HTTP
 
-`POST /v1/actions/evaluate` (also `/api/actions/evaluate`) returns the decision, reasons, execution status, and request ID. `POST /gateway/tool-call` provides the fuller protocol response. A REVIEW can be approved through `POST /v1/actions/{request_id}/approve`; it never dispatches before approval.
+`POST /v1/actions/evaluate` (also `/api/actions/evaluate`) is the canonical **pre-execution** endpoint: it does not dispatch a tool. `POST /gateway/tool-call` is the gateway-owned execution endpoint. Both require `Authorization: Bearer TOKEN`; the credential is SHA-256 hashed and mapped to the claimed registered agent by `DRISHTI_AGENT_TOKENS=agent_id:sha256(token)`. A REVIEW can be approved through `POST /v1/actions/{request_id}/approve` with the original `agent_id` and `action_hash`; it never dispatches before approval.
 
 ```bash
 curl -X POST http://localhost:8000/v1/actions/evaluate \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $DRISHTI_TOKEN" \
   -d '{"agent_id":"invoicebot","tool":"query_customer","operation":"query","resource":"customer_records","arguments":{"customer":"Acme Corp"},"scope":"CURRENT_CUSTOMER","user_intent":"Look up Acme Corp","provenance":"user","data_classification":"confidential"}'
 ```
 
@@ -88,7 +89,7 @@ curl -X POST http://localhost:8000/v1/actions/evaluate \
 ```python
 from drishti import Drishti
 
-security = Drishti("http://127.0.0.1:8000")
+security = Drishti("http://127.0.0.1:8000", token="scoped-agent-token")
 result = security.execute(
     agent_id="invoicebot", tool="query_customer", operation="query",
     resource="customers", arguments={"customer": "Acme Corp"},
@@ -99,26 +100,27 @@ result = security.execute(
 
 The SDK submits to the gateway and has no local policy fallback; it raises `PermissionError` for REVIEW or BLOCK.
 
-### MCP and OpenClaw
+### MCP gateway and native OpenClaw plugin
 
-`POST /mcp` is a guarded JSON-RPC MCP surface implementing `initialize`, `tools/list`, and `tools/call`. Add action metadata in `params._drishti`: `agent_id`, `operation`, `resource`, `scope`, `user_intent`, `provenance`, `data_classification`, and optional destination/request ID. Every MCP call enters the same `EnforcedToolGateway`; there is no unguarded MCP execution route.
+`POST /mcp` is a guarded JSON-RPC MCP **server for the configured DRISHTI adapters**, not a universal upstream proxy. `tools/call` requires the same bearer credential and enters the same `EnforcedToolGateway`; there is no unguarded MCP execution route.
 
-OpenClaw is an MCP client integration target, not a special authorization path:
+The native package in `integrations/openclaw-plugin` registers OpenClaw's `api.on("before_tool_call", handler)` lifecycle hook. It normalizes only hook-provided metadata and sends it to `/v1/actions/evaluate`; unavailable, malformed, BLOCK, and REVIEW responses return a terminal hook block. It contains no policy engine. An ALLOW returns `undefined`, allowing OpenClaw to invoke the original tool. This is distinct from MCP configuration.
 
 ```bash
 export DRISHTI_TOKEN='token supplied by your control plane' # never commit or log it
+export DRISHTI_OPENCLAW_TOKEN="$DRISHTI_TOKEN"
 drishti login
 drishti start
 drishti connect openclaw
 ```
 
-`connect openclaw` writes a mode-0600, secret-free `~/.drishti/openclaw-mcp.json` snippet without guessing or rewriting an unknown OpenClaw configuration schema. Keep protected-tool credentials away from the MCP client; protection applies only when calls use DRISHTI's `/mcp` endpoint.
+Configure the installed plugin with `DRISHTI_BASE_URL`, `DRISHTI_AGENT_ID`, `DRISHTI_TOKEN` (the *environment-variable name*, for example `DRISHTI_OPENCLAW_TOKEN`), and `DRISHTI_FAIL_MODE=closed`. `drishti connect openclaw` validates CLI support, installs the package only through OpenClaw's own CLI, and writes a mode-0600 secret-free configuration suggestion; it never rewrites an unknown OpenClaw config schema.
 
 ## Decisions, risk, and audit
 
 `RuntimeRiskEngine` calculates a deterministic 0–100 score from fixed signals including authorization, broad scope, untrusted provenance, sensitive data, destination verification, destructive operations, intent mismatch, behavioral deviation, privilege escalation, and risky chains. Levels are LOW `<25`, MEDIUM `<50`, HIGH `<75`, and CRITICAL `>=75`.
 
-The score supports explainability and review; it is not the only block mechanism. Policy and agent/tool authorization are authoritative. Unknown registered tools and unauthorized registered agents block. External or unverified destinations review, or block when combined with another policy violation. Audit records retain request ID, intent, provenance, action, risk assessment, policy decision, reasons, and execution status without storing unnecessary tool payloads.
+The score is advisory and never silently changes an ALLOW to BLOCK or REVIEW. Policy and agent/tool authorization are authoritative. Unknown tools and unauthorized agents block. External or unverified destinations review, or block when combined with another policy violation. Audit records retain request ID, intent metadata, provenance, action metadata, risk assessment, policy decision, reasons, and execution status without storing raw conversation history.
 
 ## Quality checks
 
@@ -147,7 +149,7 @@ Deployment credentials are required only for deployment and must never be commit
 
 ## Production checklist
 
-- Authenticate agents and MCP transport at the gateway.
+- Set `DRISHTI_AGENT_TOKENS` from a secret manager and use distinct per-agent credentials.
 - Load signed, versioned policy rather than relying solely on code-composed policy.
 - Route protected tools through service identities that agents cannot bypass.
 - Connect REVIEW to a human approval workflow before permitting automatic execution.
