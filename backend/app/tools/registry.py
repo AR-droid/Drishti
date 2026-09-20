@@ -2,13 +2,13 @@
 from __future__ import annotations
 from pathlib import Path
 from app.security import EnforcedToolGateway, ToolPolicy
-from app.storage import LocalAuditStore
+from app.storage import AuditStore, LocalAuditStore
 from app.tools.adapters import _ADAPTERS
 
 
-def build_demo_components(audit_path: Path) -> tuple[EnforcedToolGateway, LocalAuditStore]:
+def build_demo_components(audit_path: Path, audit_store: AuditStore | None = None) -> tuple[EnforcedToolGateway, AuditStore]:
     """Build the guarded demo gateway and the audit store it writes to."""
-    audit_store = LocalAuditStore(audit_path)
+    audit_store = audit_store or LocalAuditStore(audit_path)
     gateway = EnforcedToolGateway(
         ToolPolicy(
             frozenset(_ADAPTERS),
