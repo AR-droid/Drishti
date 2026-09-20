@@ -1,0 +1,17 @@
+{
+  "id": "drishti",
+  "name": "DRISHTI Security",
+  "version": "0.1.0",
+  "description": "Fail-closed runtime tool authorization through DRISHTI.",
+  "main": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "required": ["endpoint", "agentId", "credentialEnv"],
+    "properties": {
+      "endpoint": {"type": "string", "description": "DRISHTI API base URL"},
+      "agentId": {"type": "string", "description": "Registered DRISHTI agent ID"},
+      "credentialEnv": {"type": "string", "description": "Environment variable holding a scoped bearer credential"},
+      "failOpen": {"type": "boolean", "default": false, "description": "Must remain false for protected tools."}
+    }
+  }
+}

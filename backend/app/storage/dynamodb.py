@@ -66,4 +66,5 @@ class DynamoDBAuditStore:
             risk_score=int(item.get("risk_score", 0)), risk_level=item.get("risk_level", "LOW"),
             risk_flags=tuple(DecisionReason(reason) for reason in item.get("risk_flags", [])), policy_rule=item.get("policy_rule"),
             timestamp=datetime.fromisoformat(item["timestamp"]),
+            run_id=item.get("run_id"), session_id=item.get("session_id"),
         )
