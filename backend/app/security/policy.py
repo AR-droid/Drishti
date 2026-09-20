@@ -13,12 +13,25 @@ class PolicyEvaluation:
 class ToolPolicy:
     allowed_tools: frozenset[str]
     actor_tools: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    registered_agents: frozenset[str] | None = None
+    name: str = "Default Runtime Policy"
+
+    def is_registered(self, agent_id: str) -> bool:
+        return self.registered_agents is None or agent_id in self.registered_agents
+
+    def is_authorized(self, agent_id: str, tool: str) -> bool:
+        permitted = self.actor_tools.get(agent_id)
+        return self.is_registered(agent_id) and (permitted is None or tool in permitted)
+
+    def rule_name(self, action: Action) -> str:
+        if action.scope == "ALL_CUSTOMERS": return "Customer Data Protection"
+        if action.destination in {"external", "unknown", "unverified"}: return "Verified Destination Required"
+        return self.name
 
     def evaluate(self, action: Action) -> PolicyEvaluation:
         reasons: list[DecisionReason] = []
         if action.tool not in self.allowed_tools: reasons.append(DecisionReason.UNKNOWN_TOOL)
-        permitted = self.actor_tools.get(action.agent_id)
-        if permitted is not None and action.tool not in permitted: reasons.append(DecisionReason.UNAUTHORIZED_AGENT)
+        if not self.is_authorized(action.agent_id, action.tool): reasons.append(DecisionReason.UNAUTHORIZED_AGENT)
         if action.operation.startswith(("delete", "destroy", "remove")): reasons.append(DecisionReason.DESTRUCTIVE_OPERATION)
         if action.scope == "ALL_CUSTOMERS": reasons.append(DecisionReason.EXCESSIVE_SCOPE)
         if action.data_classification is DataClassification.SENSITIVE and action.tool == "query_customer": reasons.append(DecisionReason.SENSITIVE_DATA)

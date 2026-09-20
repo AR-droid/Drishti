@@ -42,6 +42,9 @@ class DecisionReason(StrEnum):
     UNKNOWN_TOOL = "UNKNOWN_TOOL"
     DESTRUCTIVE_OPERATION = "DESTRUCTIVE_OPERATION"
     UNVERIFIED_DESTINATION = "UNVERIFIED_DESTINATION"
+    BEHAVIORAL_DEVIATION = "BEHAVIORAL_DEVIATION"
+    PRIVILEGE_ESCALATION = "PRIVILEGE_ESCALATION"
+    RISKY_ACTION_CHAIN = "RISKY_ACTION_CHAIN"
 
 
 class ToolStatus(StrEnum):
@@ -73,6 +76,10 @@ class SecurityEvent:
     execution_status: ToolStatus
     executed: bool
     timestamp: datetime
+    risk_score: int = 0
+    risk_level: str = "LOW"
+    risk_flags: tuple[DecisionReason, ...] = ()
+    policy_rule: str | None = None
 
     @classmethod
     def from_action_result(cls, action: Action, result: ToolResult) -> SecurityEvent:
@@ -83,7 +90,8 @@ class SecurityEvent:
             user_intent=action.user_intent, provenance=action.provenance,
             data_classification=action.data_classification, destination=action.destination,
             decision=result.decision, decision_reasons=result.decision_reasons,
-            execution_status=result.status, executed=result.executed,
+            execution_status=result.status, executed=result.executed, risk_score=result.risk_score,
+            risk_level=result.risk_level, risk_flags=result.risk_flags, policy_rule=result.policy_rule,
             timestamp=action.timestamp,
         )
 
@@ -98,6 +106,8 @@ class SecurityEvent:
             "decision": self.decision.value if self.decision else None,
             "decision_reasons": [reason.value for reason in self.decision_reasons],
             "execution_status": self.execution_status.value, "executed": self.executed,
+            "risk_score": self.risk_score, "risk_level": self.risk_level,
+            "risk_flags": [flag.value for flag in self.risk_flags], "policy_rule": self.policy_rule,
             "timestamp": self.timestamp.isoformat(),
         }
 
@@ -165,6 +175,10 @@ class ToolResult:
     decision: SecurityDecision | None = None
     decision_reasons: tuple[DecisionReason, ...] = ()
     executed: bool = False
+    risk_score: int = 0
+    risk_level: str = "LOW"
+    risk_flags: tuple[DecisionReason, ...] = ()
+    policy_rule: str | None = None
 
     @property
     def ok(self) -> bool:

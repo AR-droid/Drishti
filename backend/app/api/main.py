@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+import asyncio
+import json
 from pydantic import BaseModel, Field
 
 from app.agent import DemoAgent
@@ -59,6 +62,16 @@ def _result_response(result: ToolResult) -> dict[str, Any]:
     }
 
 
+def _gateway_result(result: ToolResult) -> dict[str, Any]:
+    """Full explainable response for protocol gateways."""
+    body = _result_response(result)
+    body.update({"risk_score": result.risk_score, "risk_level": result.risk_level,
+                 "risk_flags": [flag.value for flag in result.risk_flags],
+                 "decision_reasons": [reason.value for reason in result.decision_reasons],
+                 "policy_rule": result.policy_rule, "execution_status": result.status.value})
+    return body
+
+
 def _event_response(event: SecurityEvent) -> dict[str, Any]:
     return event.to_dict()
 
@@ -85,6 +98,55 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return _result_response(gateway.execute(action))
+
+    @application.post("/gateway/tool-call")
+    def gateway_tool_call(action_request: ActionRequest) -> dict[str, Any]:
+        """Agent-agnostic HTTP integration boundary; never dispatches around core."""
+        try:
+            return _gateway_result(gateway.execute(action_request.to_domain()))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @application.post("/mcp")
+    def mcp_gateway(message: dict[str, Any]) -> dict[str, Any]:
+        """JSON-RPC MCP server surface: tools/call is guarded by this same gateway."""
+        method, params, request_id = message.get("method"), message.get("params", {}), message.get("id")
+        if method == "initialize":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": "2024-11-05", "serverInfo": {"name": "drishti-mcp-gateway", "version": "0.1.0"}, "capabilities": {"tools": {}}}}
+        if method == "tools/list":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": [{"name": name, "description": "DRISHTI-protected tool"} for name in sorted(gateway._adapters)]}}
+        if method != "tools/call":
+            return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Unsupported MCP method"}}
+        meta = params.get("_drishti", {})
+        payload = {"agent_id": meta.get("agent_id", "unknown-mcp-agent"), "tool": params.get("name", ""),
+                   "operation": meta.get("operation", "execute"), "resource": meta.get("resource", params.get("name", "")),
+                   "arguments": params.get("arguments", {}), "scope": meta.get("scope", "UNSPECIFIED"),
+                   "user_intent": meta.get("user_intent", "MCP tool request"), "provenance": meta.get("provenance", "agent"),
+                   "data_classification": meta.get("data_classification", "internal"), "destination": meta.get("destination"),
+                   "request_id": meta.get("request_id")}
+        try:
+            result = gateway.execute(ActionRequest(**payload).to_domain())
+        except (ValueError, TypeError) as error:
+            return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": str(error)}}
+        body = _gateway_result(result)
+        if not result.executed:
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(body)}], "isError": True, "_meta": {"drishti": body}}}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(dict(result.data))}], "_meta": {"drishti": body}}}
+
+    @application.get("/api/events")
+    async def events() -> StreamingResponse:
+        """Backend-derived SSE stream, polling the append-only audit store."""
+        async def stream():
+            sent = 0
+            while True:
+                records = audit_store.read_all() if hasattr(audit_store, "read_all") else []
+                for record in records[sent:]:
+                    decision = str(record.get("decision", ""))
+                    event_type = "ACTION_ALLOWED" if decision == "allow" else "ACTION_REVIEW" if decision == "review" else "ACTION_BLOCKED" if decision == "block" else "ACTION_REQUESTED"
+                    yield f"event: {event_type}\ndata: {json.dumps(record)}\n\n"
+                sent = len(records)
+                await asyncio.sleep(1)
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     @application.get("/api/traces/{request_id}")
     def get_trace(request_id: str) -> dict[str, Any]:

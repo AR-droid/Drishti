@@ -63,5 +63,7 @@ class DynamoDBAuditStore:
             decision=SecurityDecision(decision) if decision else None,
             decision_reasons=tuple(DecisionReason(reason) for reason in item["decision_reasons"]),
             execution_status=ToolStatus(item["execution_status"]), executed=bool(item["executed"]),
+            risk_score=int(item.get("risk_score", 0)), risk_level=item.get("risk_level", "LOW"),
+            risk_flags=tuple(DecisionReason(reason) for reason in item.get("risk_flags", [])), policy_rule=item.get("policy_rule"),
             timestamp=datetime.fromisoformat(item["timestamp"]),
         )
