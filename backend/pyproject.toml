@@ -7,10 +7,10 @@ name = "drishti-backend"
 version = "0.1.0"
 description = "Local, synthetic-data backend foundation for Drishti"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["fastapi>=0.115,<1.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -18,4 +18,4 @@ pythonpath = ["."]
 addopts = "-ra"
 
 [tool.setuptools]
-packages = ["app", "app.agent", "app.models", "app.security", "app.storage", "app.tools"]
+packages = ["app", "app.agent", "app.api", "app.models", "app.security", "app.storage", "app.tools"]
