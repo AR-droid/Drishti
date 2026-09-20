@@ -188,6 +188,26 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
     def get_trace(request_id: str) -> dict[str, Any]:
         return _trace_response(audit_store.get_trace(request_id))
 
+    @application.get("/api/control-plane/catalog")
+    def control_plane_catalog() -> dict[str, Any]:
+        """Read-only local runtime configuration for the console.
+
+        This intentionally reports configured capabilities, not connection or
+        cloud deployment state. It exposes no credentials or mutable policy API.
+        """
+        policy = gateway._policy
+        return {
+            "mode": "local-demo" if isinstance(audit_store, LocalAuditStore) else "configured-runtime",
+            "agents": [{"id": agent, "policy": policy.name, "tools": sorted(tools)}
+                       for agent, tools in sorted(policy.actor_tools.items())],
+            "tools": sorted(gateway._adapters),
+            "policy": {
+                "name": policy.name,
+                "rules": ["Block ALL_CUSTOMERS queries", "Block sensitive data from untrusted provenance",
+                          "Require approval for external destinations", "Block unknown tools", "Block destructive operations"],
+            },
+        }
+
     @application.post("/api/demo/safe-invoice")
     def safe_invoice() -> dict[str, Any]:
         results = demo_agent.find_acme_invoice_and_email("verified.user@example.com")
@@ -202,6 +222,19 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
         return {
             "results": [_result_response(result) for result in results],
             "trace": _trace_response(audit_store.get_trace(results[0].request_id)),
+        }
+
+    @application.post("/api/demo/review-invoice")
+    def review_invoice() -> dict[str, Any]:
+        """Queue an actual gateway REVIEW event; it never executes a tool."""
+        results = demo_agent.request_external_invoice_delivery()
+        pending = gateway._pending.get(results[0].request_id)
+        return {
+            "results": [_result_response(result) for result in results],
+            "trace": _trace_response(audit_store.get_trace(results[0].request_id)),
+            # This is an integrity binding for the approval transition, not a
+            # credential. The browser still needs a configured scoped token.
+            "action_hash": pending[0].action_hash if pending else None,
         }
 
     return application

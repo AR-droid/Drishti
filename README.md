@@ -29,7 +29,7 @@ DRISHTI does not claim to eliminate prompt injection. It limits the impact of pr
 
 ## Product experience
 
-The Vite console is a local operations surface for the enforcement gateway. It offers a live backend-derived event stream, safe and malicious InvoiceBot demonstrations, an action inspector with validation, forensic traces, and an append-only audit view. The interface never fabricates security decisions when the gateway is unavailable.
+The Vite console is a local operations surface for the enforcement gateway. It includes a product landing page, local-demo signup/sign-in entry (not production authentication), onboarding-style integration guidance, a persistent control-plane workspace, an InvoiceBot workbench, a live backend-derived event stream, action inspector, approvals, forensic traces, protected-tool registry, read-only policy view, integrations, and append-only audit view. The interface never fabricates security decisions when the gateway is unavailable.
 
 The included `DemoAgent` and fictional InvoiceBot are deterministic local harnesses, not a production LLM integration. Use the HTTP, MCP, or SDK boundary to connect a real tool-calling agent.
 
@@ -67,9 +67,18 @@ Use the console's demo controls, or run:
 ```bash
 curl -X POST http://localhost:8000/api/demo/safe-invoice
 curl -X POST http://localhost:8000/api/demo/malicious-invoice
+curl -X POST http://localhost:8000/api/demo/review-invoice
 ```
 
 The malicious path uses document provenance and broad customer scope. Its proposed tool call is blocked and the protected adapters do not execute.
+
+The review path creates a real pending `send_email` action for an external destination. It does not execute until the existing authenticated `POST /v1/actions/{request_id}/approve` endpoint is called. The console asks for a configured scoped agent credential at approval time and never stores or displays it.
+
+### Console configuration and demo path
+
+Set `VITE_API_URL` only when the frontend must use a deployed API URL; local Vite development uses the same-origin `/api` proxy. No frontend environment variable contains an agent token.
+
+For a complete local InvoiceBot attack demonstration: open `/`, choose **View live demo**, open the InvoiceBot workspace, choose **Attack scenario**, then inspect the blocked action from **Attack Traces** or the activity feed. The trace is backend evidence showing document provenance, broad customer scope, policy reasons, risk metadata, and that the protected tool was never executed. Choose **Review scenario** to create a pending external-delivery action; approving it requires a separately configured `DRISHTI_DEMO_TOKEN` (or `DRISHTI_AGENT_TOKENS` entry) and records the actual result.
 
 ## Integrate an agent
 
