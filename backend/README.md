@@ -16,6 +16,11 @@ The local InvoiceBot demonstrates `search_documents`, `read_document`,
 MCP-description-originated content is recorded as provenance **data, not authority**.
 Audit JSONL events preserve the action, decision reasons, provenance, classification,
 and whether an adapter actually executed, enabling reconstruction of blocked attacks.
+`LocalAuditStore.get_trace(request_id)` returns typed `AttackTrace` records; all
+InvoiceBot actions in one workflow share a request ID. The malicious demonstration is
+recorded as **USER → AGENT → DOCUMENT → DANGEROUS ACTION → DRISHTI → BLOCK → TOOL
+NOT EXECUTED**: the document's instruction is provenance data, and both attempted
+tool calls have `decision=block` and `executed=false`.
 
 ## Development
 

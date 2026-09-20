@@ -51,6 +51,66 @@ class ToolStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SecurityEvent:
+    """An immutable, security-relevant outcome of one DRISHTI action.
+
+    Events are keyed by ``request_id``.  A caller may deliberately reuse that ID
+    across related actions, making the resulting ordered events an attack trace.
+    """
+
+    request_id: str
+    agent_id: str
+    tool: str
+    operation: str
+    resource: str
+    scope: str
+    user_intent: str
+    provenance: Provenance
+    data_classification: DataClassification
+    destination: str | None
+    decision: SecurityDecision | None
+    decision_reasons: tuple[DecisionReason, ...]
+    execution_status: ToolStatus
+    executed: bool
+    timestamp: datetime
+
+    @classmethod
+    def from_action_result(cls, action: Action, result: ToolResult) -> SecurityEvent:
+        """Create the canonical audit record at the enforcement boundary."""
+        return cls(
+            request_id=action.request_id, agent_id=action.agent_id, tool=action.tool,
+            operation=action.operation, resource=action.resource, scope=action.scope,
+            user_intent=action.user_intent, provenance=action.provenance,
+            data_classification=action.data_classification, destination=action.destination,
+            decision=result.decision, decision_reasons=result.decision_reasons,
+            execution_status=result.status, executed=result.executed,
+            timestamp=action.timestamp,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return JSON-safe, stable names for the local append-only audit store."""
+        return {
+            "request_id": self.request_id, "agent_id": self.agent_id, "tool": self.tool,
+            "operation": self.operation, "resource": self.resource, "scope": self.scope,
+            "user_intent": self.user_intent, "provenance": self.provenance.value,
+            "data_classification": self.data_classification.value,
+            "destination": self.destination,
+            "decision": self.decision.value if self.decision else None,
+            "decision_reasons": [reason.value for reason in self.decision_reasons],
+            "execution_status": self.execution_status.value, "executed": self.executed,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AttackTrace:
+    """The ordered security events belonging to one request/trace ID."""
+
+    request_id: str
+    events: tuple[SecurityEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Action:
     """The complete security-relevant request evaluated by DRISHTI.
 
