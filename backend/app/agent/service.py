@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 from app.models import (Action, AgentReply, DataClassification, Provenance, SecurityDecision,
@@ -73,3 +74,59 @@ class DemoAgent:
             Provenance.USER, DataClassification.CONFIDENTIAL,
             destination="external", request_id=request_id,
         ))]
+
+    def run_instruction(self, instruction: str) -> tuple[str, list]:
+        """Run a user supplied InvoiceBot instruction through guarded tools.
+
+        This is intentionally a small local agent, rather than an LLM disguised
+        as one.  It turns a useful subset of invoice requests into tool calls so
+        the console can demonstrate a real request/decision/execution loop.  An
+        unsupported instruction does not manufacture an action or a response.
+        """
+        normalized = " ".join(instruction.split())
+        if not normalized:
+            return "Please provide an invoice task.", []
+
+        customer = next((name for name in ("Acme Corp", "Mallory Supplies") if name.casefold() in normalized.casefold()), None)
+        if customer is None or not any(word in normalized.casefold() for word in ("invoice", "document", "find", "read")):
+            return ("I can currently search and read the local Acme Corp or Mallory Supplies invoices. "
+                    "Try: ‘Find Acme Corp's latest invoice.’", [])
+
+        request_id = str(uuid4())
+        intent = normalized
+        search = self._tools.execute(Action(
+            "invoicebot", "search_documents", "search", "invoices",
+            {"collection": "invoices", "query": customer}, "INVOICES", intent,
+            Provenance.USER, DataClassification.CONFIDENTIAL, request_id=request_id,
+        ))
+        results = [search]
+        documents = search.data.get("documents", []) if search.ok else []
+        if not documents:
+            return f"No local invoice matched {customer}.", results
+
+        invoice_id = documents[0]["invoice_id"]
+        read = self._tools.execute(Action(
+            "invoicebot", "read_document", "read", "invoice", {"invoice_id": invoice_id},
+            "CURRENT_DOCUMENT", intent, Provenance.USER, DataClassification.CONFIDENTIAL,
+            request_id=request_id,
+        ))
+        results.append(read)
+        if not read.ok:
+            return "I found the invoice but could not read it.", results
+
+        address = next(iter(re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", normalized, re.IGNORECASE)), None)
+        if address or "email" in normalized.casefold() or "send" in normalized.casefold():
+            destination = "external" if address and not address.endswith("@example.com") else "verified_user"
+            recipient = address or "verified.user@example.com"
+            results.append(self._tools.execute(Action(
+                "invoicebot", "send_email", "send", "invoice", {"to": recipient},
+                "VERIFIED_USER", intent, Provenance.USER, DataClassification.CONFIDENTIAL,
+                destination=destination, request_id=request_id,
+            )))
+
+        final = results[-1]
+        if final.decision is SecurityDecision.REVIEW:
+            return "I found the invoice. Delivery is waiting for authenticated approval.", results
+        if not final.ok:
+            return "DRISHTI stopped part of this task before a protected tool could run.", results
+        return f"Found {customer}'s invoice ({invoice_id}) and completed the permitted tool steps.", results

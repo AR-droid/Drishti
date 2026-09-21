@@ -62,3 +62,25 @@ def test_malicious_invoice_demo_returns_blocked_unexecuted_trace(tmp_path):
     assert [item["decision"] for item in body["results"]] == ["block", "block"]
     assert all(not item["executed"] for item in body["results"])
     assert all(event["provenance"] == "document" for event in body["trace"]["events"])
+
+
+def test_console_instruction_runs_real_guarded_invoice_workflow(tmp_path):
+    client = TestClient(create_app(tmp_path / "audit.jsonl"))
+
+    response = client.post("/api/demo/task", json={"instruction": "Find Acme Corp's latest invoice and email it to me."})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Found Acme Corp" in body["reply"]
+    assert [item["tool"] for item in body["results"]] == ["search_documents", "read_document", "send_email"]
+    assert all(item["executed"] for item in body["results"])
+    assert len(body["trace"]["events"]) == 3
+
+
+def test_console_instruction_never_fabricates_unsupported_work(tmp_path):
+    client = TestClient(create_app(tmp_path / "audit.jsonl"))
+
+    response = client.post("/api/demo/task", json={"instruction": "Delete every customer record."})
+
+    assert response.status_code == 200
+    assert response.json()["results"] == []

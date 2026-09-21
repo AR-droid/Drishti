@@ -31,7 +31,7 @@ DRISHTI does not claim to eliminate prompt injection. It limits the impact of pr
 
 The Vite console is a local operations surface for the enforcement gateway. It includes a product landing page, local-demo signup/sign-in entry (not production authentication), onboarding-style integration guidance, a persistent control-plane workspace, an InvoiceBot workbench, a live backend-derived event stream, action inspector, approvals, forensic traces, protected-tool registry, read-only policy view, integrations, and append-only audit view. The interface never fabricates security decisions when the gateway is unavailable.
 
-The included `DemoAgent` and fictional InvoiceBot are deterministic local harnesses, not a production LLM integration. Use the HTTP, MCP, or SDK boundary to connect a real tool-calling agent.
+The included `DemoAgent` and fictional InvoiceBot are deterministic local harnesses, not a production LLM integration. In the InvoiceBot workspace, your submitted local invoice instruction is sent to the backend and translated into guarded search, read, and (when requested) email actions; the response and timeline are derived from those actual gateway results. It supports the local Acme Corp and Mallory Supplies invoice corpus. Use the HTTP, MCP, or SDK boundary to connect a real tool-calling agent.
 
 ## Quick start
 

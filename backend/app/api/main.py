@@ -51,6 +51,12 @@ class ActionRequest(BaseModel):
         return Action(**values)
 
 
+class AgentTaskRequest(BaseModel):
+    """A local-console instruction for the built-in InvoiceBot harness."""
+
+    instruction: str = Field(min_length=1, max_length=4_000)
+
+
 def _result_response(result: ToolResult) -> dict[str, Any]:
     """Serialize a gateway result without exposing Python enums or dataclasses."""
     return {
@@ -235,6 +241,17 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
             # This is an integrity binding for the approval transition, not a
             # credential. The browser still needs a configured scoped token.
             "action_hash": pending[0].action_hash if pending else None,
+        }
+
+    @application.post("/api/demo/task")
+    def run_demo_task(task: AgentTaskRequest) -> dict[str, Any]:
+        """Execute a console instruction and return only gateway-derived evidence."""
+        reply, results = demo_agent.run_instruction(task.instruction)
+        request_id = results[0].request_id if results else None
+        return {
+            "reply": reply,
+            "results": [_result_response(result) for result in results],
+            "trace": _trace_response(audit_store.get_trace(request_id)) if request_id else {"request_id": None, "events": []},
         }
 
     return application
