@@ -20,7 +20,10 @@ def build_demo_components(audit_path: Path, audit_store: AuditStore | None = Non
                 # direct adapter capability and is authorized only at this gateway.
                 "openclaw-local": frozenset(_ADAPTERS),
             },
-            registered_agents=frozenset({"invoicebot", "demo-user", "readonly-demo", "openclaw-local"}),
+            # Runtime identities are authenticated at the API boundary. Keeping
+            # this open lets credentials provisioned in the Agents table use the
+            # same enforcement policy without a redeploy.
+            registered_agents=None,
             name="InvoiceBot Least Privilege",
         ),
         _ADAPTERS,

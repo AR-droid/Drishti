@@ -165,3 +165,38 @@ Deployment credentials are required only for deployment and must never be commit
 - Restrict audit access and retain only the security metadata your organization needs.
 
 See [`backend/README.md`](backend/README.md) for implementation notes and [`infra/README.md`](infra/README.md) for infrastructure details.
+
+## Deployed DRISHTI URL: connect your own agent
+
+After deployment, use the `ApiUrl` stack output as `DRISHTI_URL`. The demo login remains a local control-plane entry; it is not production identity management.
+
+1. In **Workspace → Agents**, choose **Connect agent**, give the agent a name, environment, and integration, then choose **Create Agent**.
+2. Copy the one-time API credential. DRISHTI persists only its SHA-256 digest in the local registry or DynamoDB `Agents` table.
+3. Configure your runtime:
+
+```bash
+export DRISHTI_URL='https://YOUR_API.execute-api.REGION.amazonaws.com/dev'
+export DRISHTI_API_KEY='drs_live_...'
+export DRISHTI_AGENT_ID='production-agent'
+```
+
+4. Send the first evaluation request (the resulting backend event appears in Overview, Agents, Activity, Audit Log, and—when applicable—Approvals or Attack Traces):
+
+```bash
+curl -X POST "$DRISHTI_URL/v1/actions/evaluate" \
+  -H "Authorization: Bearer $DRISHTI_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "production-agent",
+    "tool": "your_tool",
+    "operation": "execute",
+    "resource": "your_resource",
+    "arguments": {},
+    "scope": "CURRENT_TASK",
+    "user_intent": "perform the requested task",
+    "provenance": "agent",
+    "data_classification": "internal"
+  }'
+```
+
+For OpenClaw 2026.9.5, create an **OpenClaw** agent first, export its credential as `DRISHTI_OPENCLAW_TOKEN`, configure `DRISHTI_BASE_URL`, `DRISHTI_AGENT_ID`, `DRISHTI_TOKEN=DRISHTI_OPENCLAW_TOKEN`, and `DRISHTI_FAIL_MODE=closed`, then restart OpenClaw. The plugin uses the current `event.toolName` and `event.params` hook API. ALLOW returns `undefined`; BLOCK returns OpenClaw's `blockReason`; REVIEW uses OpenClaw's native `requireApproval` pause and submits the bound approval only when the user chooses `allow-once`. A configured runtime is **not connected** until its first valid action reaches DRISHTI.

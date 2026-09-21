@@ -23,6 +23,7 @@ from app.models import (
     ToolResult,
 )
 from app.storage import DynamoDBAuditStore, LocalAuditStore
+from app.storage.agents import AgentStore
 from app.tools import build_demo_components
 from app.security.auth import authenticate
 
@@ -37,8 +38,8 @@ class ActionRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     scope: str
     user_intent: str
-    provenance: Provenance
-    data_classification: DataClassification
+    provenance: Provenance = Provenance.AGENT
+    data_classification: DataClassification = DataClassification.INTERNAL
     destination: str | None = None
     request_id: str | None = None
     timestamp: datetime | None = None
@@ -55,6 +56,12 @@ class AgentTaskRequest(BaseModel):
     """A local-console instruction for the built-in InvoiceBot harness."""
 
     instruction: str = Field(min_length=1, max_length=4_000)
+
+
+class CreateAgentRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    environment: str = Field(pattern="^(development|staging|production)$")
+    integration: str = Field(pattern="^(http|python|mcp|openclaw)$")
 
 
 def _result_response(result: ToolResult) -> dict[str, Any]:
@@ -95,14 +102,18 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
     audit_store = _audit_store(path)
     gateway, audit_store = build_demo_components(path, audit_store)
     demo_agent = DemoAgent(gateway)
+    agent_store = AgentStore(path.with_name("drishti-agents.json"), os.getenv("AGENTS_TABLE") if os.getenv("DRISHTI_STORAGE_BACKEND") == "dynamodb" else None)
 
     application = FastAPI(title="DRISHTI API", version="0.1.0")
     application.state.gateway = gateway
     application.state.audit_store = audit_store
+    application.state.agent_store = agent_store
 
     def authenticated_action(action_request: ActionRequest, authorization: str | None) -> Action:
         token = authorization.removeprefix("Bearer ").strip() if authorization and authorization.startswith("Bearer ") else None
-        if not authenticate(token, action_request.agent_id):
+        # Created credentials are checked against the Agents registry. Environment
+        # credentials remain a deliberate local/demo fallback.
+        if not agent_store.authenticate(token, action_request.agent_id) and not authenticate(token, action_request.agent_id):
             raise HTTPException(status_code=401, detail="Invalid agent credential")
         try:
             return action_request.to_domain()
@@ -114,11 +125,50 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
         """Unauthenticated liveness probe; it exposes no policy or audit data."""
         return {"status": "ok", "service": "drishti-security-api"}
 
+    @application.post("/v1/agents", status_code=201)
+    def create_agent(request: CreateAgentRequest) -> dict[str, Any]:
+        try:
+            record, credential = agent_store.create(request.name, request.environment, request.integration)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        # Credential is intentionally returned exactly here (and on explicit rotation).
+        return {**AgentStore.public(record), "credential": credential}
+
+    @application.get("/v1/agents")
+    def list_agents() -> list[dict[str, Any]]:
+        invoicebot = {"agent_id": "invoicebot", "name": "InvoiceBot", "environment": "development", "integration": "demo", "status": "protected", "demo": True, "last_seen": None, "revoked": False}
+        return [invoicebot, *agent_store.list()]
+
+    @application.get("/v1/agents/{agent_id}")
+    def get_agent(agent_id: str) -> dict[str, Any]:
+        if agent_id == "invoicebot": return list_agents()[0]
+        record = agent_store.get(agent_id)
+        if not record: raise HTTPException(status_code=404, detail="Agent not found")
+        return AgentStore.public(record)
+
+    @application.post("/v1/agents/{agent_id}/credentials")
+    def rotate_agent_credential(agent_id: str) -> dict[str, Any]:
+        rotated = agent_store.rotate(agent_id)
+        if not rotated: raise HTTPException(status_code=404, detail="Agent not found")
+        record, credential = rotated
+        return {**AgentStore.public(record), "credential": credential}
+
+    @application.post("/v1/agents/{agent_id}/revoke")
+    def revoke_agent_credential(agent_id: str) -> dict[str, Any]:
+        record = agent_store.revoke(agent_id)
+        if not record: raise HTTPException(status_code=404, detail="Agent not found")
+        return AgentStore.public(record)
+
     @application.post("/api/actions/evaluate")
     @application.post("/v1/actions/evaluate")
     def evaluate_action(action_request: ActionRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """Canonical pre-execution evaluation: this endpoint never runs a tool."""
-        return _gateway_result(gateway.authorize(authenticated_action(action_request, authorization)))
+        result = gateway.authorize(authenticated_action(action_request, authorization))
+        body = _gateway_result(result)
+        pending = gateway._pending.get(result.request_id)
+        if pending:
+            body["action_hash"] = pending[0].action_hash
+        return body
 
     @application.post("/v1/actions/{request_id}/approve")
     def approve_action(request_id: str, body: dict[str, str], authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -126,7 +176,8 @@ def create_app(audit_path: Path | None = None) -> FastAPI:
         try:
             # Approval is a control-plane action. Require a configured credential;
             # the action hash binds this transition to the original request.
-            if not authenticate((authorization or "").removeprefix("Bearer ").strip(), body.get("agent_id", "")):
+            token = (authorization or "").removeprefix("Bearer ").strip()
+            if not agent_store.authenticate(token, body.get("agent_id", "")) and not authenticate(token, body.get("agent_id", "")):
                 raise HTTPException(status_code=401, detail="Invalid agent credential")
             return _gateway_result(gateway.approve(request_id, body.get("action_hash")))
         except KeyError as error:
