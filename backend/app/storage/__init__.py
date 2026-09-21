@@ -14,5 +14,6 @@ class AuditStore(Protocol):
 
 from .dynamodb import DynamoDBAuditStore
 from .local import LocalAuditStore
+from .agents import AgentStore
 
-__all__ = ["AuditStore", "DynamoDBAuditStore", "LocalAuditStore"]
+__all__ = ["AuditStore", "DynamoDBAuditStore", "LocalAuditStore", "AgentStore"]

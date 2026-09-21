@@ -53,17 +53,10 @@ Resources:
           AGENTS_TABLE: !Ref AgentsTable
           INCIDENTS_TABLE: !Ref IncidentsTable
           ARTIFACTS_BUCKET: !Ref ArtifactsBucket
-      Events:
-        ApiProxy:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref DrishtiApi
-            Path: /{proxy+}
-            Method: ANY
       Policies:
         - Statement:
             - Effect: Allow
-              Action: [dynamodb:PutItem]
+              Action: [dynamodb:PutItem, dynamodb:GetItem, dynamodb:Scan, dynamodb:UpdateItem]
               Resource:
                 - !GetAtt SecurityEventsTable.Arn
                 - !GetAtt AttackTracesTable.Arn
@@ -90,6 +83,30 @@ Resources:
             - Effect: Allow
               Action: [logs:CreateLogStream, logs:PutLogEvents]
               Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${DrishtiApiFunction}:*'
+
+  # Explicit HTTP API wiring avoids SAM's generated Function/Event/Stage cycle.
+  DrishtiApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DrishtiApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt DrishtiApiFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  DrishtiApiProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DrishtiApi
+      RouteKey: '$default'
+      Target: !Join ['/', ['integrations', !Ref DrishtiApiIntegration]]
+
+  DrishtiApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DrishtiApiFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${DrishtiApi}/*'
 
   PoliciesTable:
     Type: AWS::DynamoDB::Table

@@ -4,34 +4,32 @@ import { randomUUID } from "node:crypto";
 const PROVENANCE = new Set(["user", "system", "agent", "document", "webpage", "email", "tool_result", "mcp_tool_description"]);
 const string = (value, fallback) => typeof value === "string" && value.trim() ? value : fallback;
 
-export function normalizeAction(event, config) {
-  const call = event?.toolCall ?? event?.tool_call ?? event ?? {};
-  const context = event?.context ?? event?.runContext ?? {};
-  const metadata = call._drishti ?? call.metadata?.drishti ?? context._drishti ?? {};
-  const tool = string(call.name ?? call.tool ?? event?.tool, "unknown_openclaw_tool");
+export function normalizeAction(event, ctx = {}, config = {}) {
+  // OpenClaw 2026.9.5 gives hook data directly, not under legacy toolCall/context.
+  const metadata = event?._drishti ?? event?.params?._drishti ?? event?.params?.metadata?.drishti ?? {};
+  const tool = string(event?.toolName, "unknown_openclaw_tool");
   const provenance = string(metadata.provenance, "agent");
   return {
-    agent_id: config.agentId,
-    tool,
-    operation: string(metadata.operation ?? call.operation, "execute"),
+    agent_id: string(config.agentId ?? ctx.agentId, "unknown-openclaw-agent"),
+    tool, operation: string(metadata.operation, "execute"),
     resource: string(metadata.resource ?? tool, tool),
-    arguments: call.arguments ?? call.input ?? {},
+    arguments: event?.params ?? {},
     scope: string(metadata.scope, "UNSPECIFIED"),
     // OpenClaw does not guarantee prompt history in this hook. Unknown is honest.
-    user_intent: string(metadata.user_intent ?? context.userIntent ?? context.user_intent, "unknown"),
+    user_intent: string(metadata.user_intent ?? ctx.requester?.userIntent, "unknown"),
     provenance: PROVENANCE.has(provenance) ? provenance : "agent",
     data_classification: string(metadata.data_classification, "internal"),
     destination: metadata.destination,
-    request_id: string(metadata.request_id ?? event?.requestId ?? context.requestId, randomUUID()),
-    run_id: string(event?.runId ?? context.runId, undefined),
-    session_id: string(event?.sessionId ?? context.sessionId, undefined)
+    request_id: string(metadata.request_id ?? event?.toolCallId, randomUUID()),
+    run_id: string(event?.runId ?? ctx.runId, undefined),
+    session_id: string(ctx.sessionId, undefined)
   };
 }
 
-function block(reason, decision = "block") {
+function block(reason) {
   // OpenClaw's before_tool_call contract consumes a blocking result. Keep the
   // decision and request ID in the reason rather than exposing any credential.
-  return { block: true, reason: `DRISHTI ${decision.toUpperCase()}: ${reason}` };
+  return { block: true, blockReason: `DRISHTI BLOCK: ${reason}` };
 }
 
 export function createDrishtiPlugin(api) {
@@ -44,10 +42,10 @@ export function createDrishtiPlugin(api) {
   }
   if ((config.DRISHTI_FAIL_MODE ?? "closed") !== "closed" || config.failOpen === true) throw new Error("DRISHTI fail-open is forbidden for protected tools");
   const endpoint = `${endpointValue.replace(/\/$/, "")}/v1/actions/evaluate`;
-  api.on("before_tool_call", async (event) => {
+  api.on("before_tool_call", async (event, ctx = {}) => {
     const token = process.env[credentialEnv];
     if (!token) return block("missing scoped credential");
-    const action = normalizeAction(event, { ...config, agentId });
+    const action = normalizeAction(event, ctx, { ...config, agentId: agentId ?? ctx.agentId });
     let response;
     try {
       response = await fetch(endpoint, {
@@ -66,11 +64,20 @@ export function createDrishtiPlugin(api) {
     }
     if (result.decision === "allow") return undefined;
     if (result.decision === "review") {
-      // An approval-capable OpenClaw runtime may render this as approval UI; in
-      // every runtime it blocks execution until an explicit continuation occurs.
-      return { ...block(result.request_id ?? "approval required", "review"), approvalRequired: true, drishtiRequestId: result.request_id };
+      return { requireApproval: {
+        title: "DRISHTI approval required",
+        description: result.reason ?? "This protected action requires explicit approval.",
+        severity: "warning", pluginId: "drishti", allowedDecisions: ["allow-once", "deny"],
+        onResolution: async (decision) => {
+          if (decision !== "allow-once") return;
+          await fetch(`${endpointValue.replace(/\/$/, "")}/v1/actions/${result.request_id}/approve`, {
+            method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+            body: JSON.stringify({ agent_id: action.agent_id, action_hash: result.action_hash })
+          });
+        }
+      }};
     }
-    return block(result.reason ?? result.decision_reasons?.join(", ") ?? "blocked", "block");
+    return block(result.reason ?? result.decision_reasons?.join(", ") ?? "blocked");
   });
 }
 
